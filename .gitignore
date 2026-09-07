@@ -1,0 +1,35 @@
+# ===== Maven 构建产物 =====
+target/
+*.jar
+*.war
+*.ear
+
+# ===== Java 编译文件 =====
+*.class
+
+# ===== IDE：IntelliJ IDEA =====
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# ===== IDE：Eclipse / STS =====
+.classpath
+.project
+.settings/
+bin/
+
+# ===== IDE：VS Code =====
+.vscode/
+
+# ===== 操作系统文件 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 日志与临时文件 =====
+*.log
+*.tmp
+*.bak
+hs_err_pid*
