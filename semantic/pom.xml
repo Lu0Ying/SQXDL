@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.sqxdl</groupId>
+        <artifactId>SQXDL</artifactId>
+        <version>1.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>sqxdl-semantic</artifactId>
+    <packaging>jar</packaging>
+    <name>SQXDL :: Semantic</name>
+    <description>语义分析模块：SemanticAnalyzer、PlanGenerator、CatalogImpl</description>
+
+    <dependencies>
+        <!-- PlanNode.FilterPlan 引用 ASTNode -->
+        <dependency>
+            <groupId>com.sqxdl</groupId>
+            <artifactId>sqxdl-parser</artifactId>
+        </dependency>
+        <!-- CatalogImpl 实现 Catalog 接口 -->
+        <dependency>
+            <groupId>com.sqxdl</groupId>
+            <artifactId>sqxdl-storage</artifactId>
+        </dependency>
+    </dependencies>
+</project>
