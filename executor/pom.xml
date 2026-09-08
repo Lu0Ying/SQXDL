@@ -17,7 +17,7 @@
     <description>执行模块：REPL 入口 Main、执行器 Executor</description>
 
     <dependencies>
-        <!-- 依赖语义模块，传递引入 parser、storage -->
+        <!-- 依赖语义模块，传递引入 parser -->
         <dependency>
             <groupId>com.sqxdl</groupId>
             <artifactId>sqxdl-semantic</artifactId>

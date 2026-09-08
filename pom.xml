@@ -14,9 +14,10 @@
     <description>数据库管理系统实训项目（SQXDL）</description>
 
     <!-- 子模块列表，构建顺序按依赖关系由 Maven 自行拓扑排序 -->
+    <!-- storage 已改为独立 C++ 程序（storage_core.exe，见 storage/readme.md），
+         不再作为 Maven 模块参与聚合构建 -->
     <modules>
         <module>parser</module>
-        <module>storage</module>
         <module>semantic</module>
         <module>executor</module>
     </modules>
@@ -35,11 +36,6 @@
             <dependency>
                 <groupId>com.sqxdl</groupId>
                 <artifactId>sqxdl-parser</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>com.sqxdl</groupId>
-                <artifactId>sqxdl-storage</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
