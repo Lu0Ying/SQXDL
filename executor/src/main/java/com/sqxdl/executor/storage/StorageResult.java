@@ -51,6 +51,16 @@ public class StorageResult {
         return new StorageResult(Type.ERROR, List.of(), List.of(), 0, code, message);
     }
 
+    /** 构造一个本地查询结果（供模拟执行/测试使用） */
+    public static StorageResult resultset(List<String> columns, List<List<Object>> rows) {
+        return new StorageResult(Type.RESULTSET, List.copyOf(columns), rows, 0, null, null);
+    }
+
+    /** 构造一个本地行数结果（供模拟执行/测试使用） */
+    public static StorageResult rowcount(long rowsAffected) {
+        return new StorageResult(Type.ROWCOUNT, List.of(), List.of(), rowsAffected, null, null);
+    }
+
     private static StorageResult fromError(Map<?, ?> map) {
         Object error = map.get("error");
         if (error instanceof Map<?, ?> err) {
