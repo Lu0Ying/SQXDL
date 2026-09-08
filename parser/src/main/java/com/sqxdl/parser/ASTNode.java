@@ -109,7 +109,7 @@ public abstract class ASTNode {
     public static class LiteralExpr extends ASTNode {
 
         /** 字面量词法类型 */
-        public enum Kind { NUMBER, STRING }
+        public enum Kind { NUMBER, STRING, BOOLEAN }
 
         private final String value;
         private final Kind kind;
