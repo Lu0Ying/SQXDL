@@ -19,7 +19,8 @@ public class Lexer {
     /** 关键字表（统一大写存放，识别时不区分大小写） */
     private static final Set<String> KEYWORDS = Set.of(
             "SELECT", "FROM", "WHERE", "CREATE", "TABLE",
-            "INSERT", "INTO", "VALUES", "DELETE", "AND");
+            "INSERT", "INTO", "VALUES", "DELETE", "UPDATE", "SET",
+            "AND", "OR", "TRUE", "FALSE");
 
     /** 双字符运算符，需先于单字符判断 */
     private static final Set<String> TWO_CHAR_OPERATORS = Set.of("<=", ">=", "!=", "==", "&&", "||");
