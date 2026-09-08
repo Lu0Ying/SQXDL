@@ -1,5 +1,11 @@
 package com.sqxdl.executor;
 
+import com.sqxdl.parser.ASTNode;
+import com.sqxdl.parser.Parser;
+import com.sqxdl.semantic.CatalogImpl;
+import com.sqxdl.semantic.PlanGenerator;
+import com.sqxdl.semantic.SemanticAnalyzer;
+
 import java.util.Scanner;
 
 /**
@@ -16,6 +22,12 @@ public class Main {
         // 外层兜底：防止任何未预料的异常导致进程异常退出
         try (Scanner scanner = new Scanner(System.in)) {
             System.out.println("SQXDL 交互式终端已启动。输入 SQL 后回车执行，输入 exit 退出。");
+
+            // 数据字典与执行器在 REPL 生命周期内复用，保证建表元数据跨语句可见
+            CatalogImpl catalog = new CatalogImpl();
+            SemanticAnalyzer analyzer = new SemanticAnalyzer(catalog);
+            PlanGenerator generator = new PlanGenerator(catalog);
+            Executor executor = new Executor();
 
             while (true) {
                 System.out.print("sqxdl> ");
@@ -43,10 +55,16 @@ public class Main {
                         break;
                     }
 
-                    // TODO: 后续替换为真实的词法 -> 语法 -> 语义 -> 计划 -> 执行流水线
-                    System.out.println("词法分析中...");
-                    System.out.println("语法分析中...");
-                    System.out.println("执行成功: " + sql);
+                    // 流水线：语法 -> 语义 -> 计划生成 -> 执行。
+                    // Lexer/Parser 为 A 组 TODO（parse 当前返回 null），
+                    // 完成后此处无需改动即可生效
+                    ASTNode ast = new Parser().parse();
+                    if (ast == null) {
+                        System.out.println("语法分析尚未实现（Parser TODO），已跳过该语句。");
+                        continue;
+                    }
+                    analyzer.analyze(ast);
+                    executor.execute(generator.generate(ast));
                 } catch (Exception e) {
                     System.err.println("⚠执行出错: " + e.getMessage());
                 }
