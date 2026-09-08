@@ -22,10 +22,5 @@
             <groupId>com.sqxdl</groupId>
             <artifactId>sqxdl-parser</artifactId>
         </dependency>
-        <!-- CatalogImpl 实现 Catalog 接口 -->
-        <dependency>
-            <groupId>com.sqxdl</groupId>
-            <artifactId>sqxdl-storage</artifactId>
-        </dependency>
     </dependencies>
 </project>
