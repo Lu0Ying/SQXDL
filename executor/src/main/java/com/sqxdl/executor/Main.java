@@ -1,6 +1,7 @@
 package com.sqxdl.executor;
 
 import com.sqxdl.parser.ASTNode;
+import com.sqxdl.parser.Lexer;
 import com.sqxdl.parser.Parser;
 import com.sqxdl.semantic.CatalogImpl;
 import com.sqxdl.semantic.PlanGenerator;
@@ -55,14 +56,8 @@ public class Main {
                         break;
                     }
 
-                    // 流水线：语法 -> 语义 -> 计划生成 -> 执行。
-                    // Lexer/Parser 为 A 组 TODO（parse 当前返回 null），
-                    // 完成后此处无需改动即可生效
-                    ASTNode ast = new Parser().parse();
-                    if (ast == null) {
-                        System.out.println("语法分析尚未实现（Parser TODO），已跳过该语句。");
-                        continue;
-                    }
+                    // 流水线：词法 -> 语法 -> 语义 -> 计划生成 -> 执行
+                    ASTNode ast = new Parser(new Lexer(sql)).parse();
                     analyzer.analyze(ast);
                     executor.execute(generator.generate(ast));
                 } catch (Exception e) {

@@ -3,6 +3,9 @@ package com.sqxdl.executor;
 import com.sqxdl.executor.storage.StorageClient;
 import com.sqxdl.executor.storage.StorageResult;
 import com.sqxdl.parser.ASTNode;
+import com.sqxdl.parser.Lexer;
+import com.sqxdl.parser.Parser;
+import com.sqxdl.parser.SqxdlException;
 import com.sqxdl.semantic.CatalogImpl;
 import com.sqxdl.semantic.PlanGenerator;
 import com.sqxdl.semantic.PlanNode;
@@ -10,17 +13,14 @@ import com.sqxdl.semantic.SemanticAnalyzer;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * SQL 执行引擎：CLI（Main）与 GUI（SwingDemo）共用的执行门面。
- * 流水线：SQL 文本 -> 构造 AST -> 语义分析 -> 计划生成 -> 存储核心执行。
- * 说明：A 组 Parser 完成前，AST 由本类的正则解析临时构造，接口不变，
- *       之后只需把 parse 方法替换为 Parser 调用即可。
+ * 流水线：SQL 文本 -> Lexer/Parser（A 组）-> 语义分析 -> 计划生成 -> 执行。
  * 存储核心（storage_core.exe）不可用时回退内置示例数据模拟执行，
  * 保证 Demo 脱离 C++ 存储程序也能完整演示。
  */
@@ -35,24 +35,35 @@ public class SqlEngine {
      */
     public enum Mode { AUTO, LOCAL }
 
-    /** 内存表结构：列名 + 数据行（模拟模式的数据载体） */
+    /** 内存表结构：列信息（名+类型）+ 数据行（模拟模式的数据载体） */
     private static class TableData {
-        final List<String> columns;
+        final List<CatalogImpl.ColumnInfo> columns;
         final List<List<Object>> rows;
 
-        TableData(List<String> columns, List<List<Object>> rows) {
+        TableData(List<CatalogImpl.ColumnInfo> columns, List<List<Object>> rows) {
             this.columns = columns;
             this.rows = rows;
         }
+
+        /** 按列名取下标，不存在返回 -1 */
+        int indexOf(String columnName) {
+            for (int i = 0; i < columns.size(); i++) {
+                if (columns.get(i).getName().equals(columnName)) {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        /** 列名清单（供求值与投影使用） */
+        List<String> columnNames() {
+            List<String> names = new ArrayList<>();
+            for (CatalogImpl.ColumnInfo info : columns) {
+                names.add(info.getName());
+            }
+            return names;
+        }
     }
-
-    // SELECT * FROM 表 [WHERE 列 操作符 值]
-    private static final Pattern SELECT_PATTERN = Pattern.compile(
-            "(?i)^SELECT\\s+\\*\\s+FROM\\s+(\\w+)(?:\\s+WHERE\\s+(\\w+)\\s*(=|!=|<>|>|<|>=|<=)\\s*(.+?))?$");
-
-    // INSERT INTO 表 VALUES (v1, v2, ...)
-    private static final Pattern INSERT_PATTERN = Pattern.compile(
-            "(?i)^INSERT\\s+INTO\\s+(\\w+)\\s+VALUES\\s*\\((.+)\\)$");
 
     /** 存储核心不可用的错误码：命中即回退模拟执行 */
     private static final List<String> STORAGE_FAILURE_CODES =
@@ -81,8 +92,8 @@ public class SqlEngine {
     public SqlEngine(Mode mode) {
         this.mode = mode;
         initSampleData();
-        // 把示例表注册进数据字典，语义分析即可对表/列做真实校验
-        tables.forEach((name, data) -> catalog.createTable(name, data.columns));
+        // 把示例表的列名与类型注册进数据字典，语义分析即可做真实校验
+        tables.forEach((name, data) -> catalog.createTableWithTypes(name, data.columns));
     }
 
     /** 可供浏览的表名列表（供 GUI 左侧列表使用） */
@@ -106,22 +117,18 @@ public class SqlEngine {
             return StorageResult.error("EMPTY_SQL", "SQL 语句为空");
         }
 
-        // 阶段一：解析（语法错误）
+        // 阶段一：词法 + 语法解析（复用 A 组真实代码）
         ASTNode ast;
         try {
-            ast = parse(normalized);
-        } catch (IllegalArgumentException e) {
+            ast = new Parser(new Lexer(normalized)).parse();
+        } catch (SqxdlException e) {
             return StorageResult.error("SYNTAX_ERROR", e.getMessage());
         }
-        // 非 SELECT/INSERT 语句暂不解析，按"执行成功"处理
-        if (ast == null) {
-            return StorageResult.rowcount(0);
-        }
 
-        // 阶段二：语义分析（复用 B 组真实校验）
+        // 阶段二：语义分析（复用 B 组真实校验，含列类型校验）
         try {
             new SemanticAnalyzer(catalog).analyze(ast);
-        } catch (IllegalArgumentException e) {
+        } catch (RuntimeException e) {
             return StorageResult.error("SEMANTIC_ERROR", e.getMessage());
         }
 
@@ -140,7 +147,7 @@ public class SqlEngine {
         return simulate(ast);
     }
 
-    // ====================== 解析：SQL 文本 -> AST ======================
+    // ====================== 执行：真实存储 / 模拟回退 ======================
 
     /** 规范化输入：去首尾空白与末尾分号 */
     private String normalize(String sql) {
@@ -150,85 +157,6 @@ public class SqlEngine {
                 : trimmed;
     }
 
-    /**
-     * 临时解析器：正则匹配构造 AST。
-     * SELECT/INSERT 前缀但格式不符时抛语法错误；其余语句返回 null。
-     */
-    private ASTNode parse(String sql) {
-        Matcher select = SELECT_PATTERN.matcher(sql);
-        if (select.matches()) {
-            return buildSelect(select);
-        }
-        Matcher insert = INSERT_PATTERN.matcher(sql);
-        if (insert.matches()) {
-            return buildInsert(insert);
-        }
-        String upper = sql.toUpperCase();
-        if (upper.startsWith("SELECT") || upper.startsWith("INSERT")) {
-            throw new IllegalArgumentException("无法解析的语句: " + sql
-                    + "（当前支持 SELECT * FROM 表 [WHERE 列 op 值] 与 INSERT INTO 表 VALUES (...)" +
-                    "）");
-        }
-        return null;
-    }
-
-    /** 构造 SELECT AST：selectList 固定 [*]，WHERE 存在时构造 列 op 字面量 */
-    private ASTNode buildSelect(Matcher m) {
-        ASTNode whereCond = null;
-        if (m.group(2) != null) {
-            whereCond = new ASTNode.BinaryExpr(1, 1, m.group(3),
-                    new ASTNode.ColumnRef(1, 1, m.group(2)),
-                    buildLiteral(m.group(4).trim()));
-        }
-        return new ASTNode.SelectStmt(1, 1, m.group(1), List.of("*"), whereCond);
-    }
-
-    /** 构造 INSERT AST：未指定列清单（空列表表示按建表顺序对应） */
-    private ASTNode buildInsert(Matcher m) {
-        List<ASTNode.LiteralExpr> values = new ArrayList<>();
-        for (String item : splitValues(m.group(2))) {
-            values.add(buildLiteral(item.trim()));
-        }
-        return new ASTNode.InsertStmt(1, 1, m.group(1), List.of(), values);
-    }
-
-    /** 字面量构造：引号包裹 -> STRING（去引号），纯数字 -> NUMBER（存原文），其余按字符串 */
-    private ASTNode.LiteralExpr buildLiteral(String text) {
-        boolean quoted = (text.startsWith("'") && text.endsWith("'") && text.length() >= 2)
-                || (text.startsWith("\"") && text.endsWith("\"") && text.length() >= 2);
-        if (quoted) {
-            return new ASTNode.LiteralExpr(1, 1,
-                    text.substring(1, text.length() - 1), ASTNode.LiteralExpr.Kind.STRING);
-        }
-        if (text.matches("\\d+(\\.\\d+)?")) {
-            return new ASTNode.LiteralExpr(1, 1, text, ASTNode.LiteralExpr.Kind.NUMBER);
-        }
-        return new ASTNode.LiteralExpr(1, 1, text, ASTNode.LiteralExpr.Kind.STRING);
-    }
-
-    /** 拆分 VALUES 值列表，引号内的逗号不参与拆分 */
-    private List<String> splitValues(String content) {
-        List<String> items = new ArrayList<>();
-        StringBuilder current = new StringBuilder();
-        boolean inQuote = false;
-        for (int i = 0; i < content.length(); i++) {
-            char c = content.charAt(i);
-            if (c == '\'' || c == '"') {
-                inQuote = !inQuote;
-                current.append(c);
-            } else if (c == ',' && !inQuote) {
-                items.add(current.toString());
-                current.setLength(0);
-            } else {
-                current.append(c);
-            }
-        }
-        items.add(current.toString());
-        return items;
-    }
-
-    // ====================== 执行：真实存储 / 模拟回退 ======================
-
     /** 存储核心缺失/超时视为不可用，需要回退模拟 */
     private boolean isStorageFailure(StorageResult result) {
         return result.getType() == StorageResult.Type.ERROR
@@ -237,29 +165,52 @@ public class SqlEngine {
 
     /** 用内置示例数据模拟执行（数据保存在 JVM 内） */
     private StorageResult simulate(ASTNode ast) {
-        if (ast instanceof ASTNode.SelectStmt stmt) {
-            return simulateSelect(stmt);
+        try {
+            if (ast instanceof ASTNode.SelectStmt stmt) {
+                return simulateSelect(stmt);
+            }
+            if (ast instanceof ASTNode.InsertStmt stmt) {
+                return simulateInsert(stmt);
+            }
+            if (ast instanceof ASTNode.UpdateStmt stmt) {
+                return simulateUpdate(stmt);
+            }
+            if (ast instanceof ASTNode.DeleteStmt stmt) {
+                return simulateDelete(stmt);
+            }
+            if (ast instanceof ASTNode.CreateTableStmt stmt) {
+                return simulateCreateTable(stmt);
+            }
+            return StorageResult.error("UNSUPPORTED",
+                    "模拟模式不支持该语句: " + ast.getClass().getSimpleName());
+        } catch (RuntimeException e) {
+            // 模拟求值中的运行期错误（如除零）不向调用方抛出
+            return StorageResult.error("EXEC_ERROR", e.getMessage());
         }
-        if (ast instanceof ASTNode.InsertStmt stmt) {
-            return simulateInsert(stmt);
-        }
-        return StorageResult.error("UNSUPPORTED",
-                "模拟模式不支持该语句: " + ast.getClass().getSimpleName());
     }
 
-    /** 模拟 SELECT：按 WHERE 条件过滤内置数据 */
+    /** 模拟 SELECT：按 WHERE 条件过滤，再按列清单投影 */
     private StorageResult simulateSelect(ASTNode.SelectStmt stmt) {
         TableData data = tables.get(stmt.getTableName());
-        ASTNode.BinaryExpr cond = stmt.getWhereCond() instanceof ASTNode.BinaryExpr expr
-                ? expr : null;
+        List<String> allNames = data.columnNames();
+        // 投影列：SELECT * 为全部列，否则按列清单
+        List<String> projectedColumns = stmt.getSelectList().contains("*")
+                ? allNames
+                : stmt.getSelectList();
 
         List<List<Object>> rows = new ArrayList<>();
         for (List<Object> row : data.rows) {
-            if (cond == null || matchesCondition(row, data.columns, cond)) {
-                rows.add(row);
+            if (stmt.getWhereCond() != null
+                    && !matchesCondition(row, allNames, stmt.getWhereCond())) {
+                continue;
             }
+            List<Object> projected = new ArrayList<>();
+            for (String column : projectedColumns) {
+                projected.add(row.get(data.indexOf(column)));
+            }
+            rows.add(projected);
         }
-        return StorageResult.resultset(data.columns, rows);
+        return StorageResult.resultset(projectedColumns, rows);
     }
 
     /** 模拟 INSERT：把新行追加到内置数据 */
@@ -267,41 +218,136 @@ public class SqlEngine {
         TableData data = tables.get(stmt.getTableName());
         List<Object> row = new ArrayList<>();
         for (ASTNode.LiteralExpr literal : stmt.getValues()) {
-            row.add(literal.getKind() == ASTNode.LiteralExpr.Kind.NUMBER
-                    ? toNumber(literal.getValue())
-                    : literal.getValue());
+            row.add(literalValue(literal));
         }
         data.rows.add(row);
         return StorageResult.rowcount(1);
     }
 
-    // ====================== 模拟过滤的求值与比较 ======================
-
-    /** 求值 WHERE 条件：列 op 字面量，数字列按数值比较，否则按字符串比较 */
-    private boolean matchesCondition(List<Object> row, List<String> columns,
-                                     ASTNode.BinaryExpr cond) {
-        String column = ((ASTNode.ColumnRef) cond.getLeft()).getName();
-        ASTNode.LiteralExpr literal = (ASTNode.LiteralExpr) cond.getRight();
-
-        int index = columns.indexOf(column);
-        if (index < 0) {
-            return false; // 语义分析已保证列存在，此处防御性兜底
+    /** 模拟 UPDATE：更新满足条件的行（无 WHERE 作用于全表） */
+    private StorageResult simulateUpdate(ASTNode.UpdateStmt stmt) {
+        TableData data = tables.get(stmt.getTableName());
+        List<String> columnNames = data.columnNames();
+        long affected = 0;
+        for (List<Object> row : data.rows) {
+            if (stmt.getWhereCond() != null
+                    && !matchesCondition(row, columnNames, stmt.getWhereCond())) {
+                continue;
+            }
+            for (Map.Entry<String, ASTNode.LiteralExpr> assignment
+                    : stmt.getAssignments().entrySet()) {
+                int index = data.indexOf(assignment.getKey());
+                if (index >= 0) {
+                    row.set(index, literalValue(assignment.getValue()));
+                }
+            }
+            affected++;
         }
-        Object target = literal.getKind() == ASTNode.LiteralExpr.Kind.NUMBER
-                ? toNumber(literal.getValue())
-                : literal.getValue();
+        return StorageResult.rowcount(affected);
+    }
 
-        Double left = toDouble(row.get(index));
-        Double right = toDouble(target);
-        if (left != null && right != null) {
-            return compare(left, cond.getOp(), right);
+    /** 模拟 DELETE：删除满足条件的行（无 WHERE 作用于全表） */
+    private StorageResult simulateDelete(ASTNode.DeleteStmt stmt) {
+        TableData data = tables.get(stmt.getTableName());
+        List<String> columnNames = data.columnNames();
+        Iterator<List<Object>> iterator = data.rows.iterator();
+        long affected = 0;
+        while (iterator.hasNext()) {
+            List<Object> row = iterator.next();
+            if (stmt.getWhereCond() == null
+                    || matchesCondition(row, columnNames, stmt.getWhereCond())) {
+                iterator.remove();
+                affected++;
+            }
         }
-        return compare(String.valueOf(row.get(index)), cond.getOp(), String.valueOf(target));
+        return StorageResult.rowcount(affected);
+    }
+
+    /** 模拟 CREATE TABLE：登记元数据与空表，供后续语句使用 */
+    private StorageResult simulateCreateTable(ASTNode.CreateTableStmt stmt) {
+        // 语义分析已保证表不存在；建表语句的列暂无类型，按 Catalog 默认（VARCHAR）登记
+        tables.put(stmt.getTableName(),
+                new TableData(toColumnInfos(stmt.getColumns()), new ArrayList<>()));
+        catalog.createTable(stmt.getTableName(), stmt.getColumns());
+        return StorageResult.rowcount(0);
+    }
+
+    /** 把列名清单转为默认 VARCHAR 类型的列信息清单 */
+    private List<CatalogImpl.ColumnInfo> toColumnInfos(List<String> names) {
+        List<CatalogImpl.ColumnInfo> infos = new ArrayList<>();
+        for (String name : names) {
+            infos.add(new CatalogImpl.ColumnInfo(name, CatalogImpl.DataType.VARCHAR));
+        }
+        return infos;
+    }
+
+    // ====================== 模拟执行的表达式求值 ======================
+
+    /** 求值 WHERE 条件：结果为真时该行命中 */
+    private boolean matchesCondition(List<Object> row, List<String> columns, ASTNode cond) {
+        return Boolean.TRUE.equals(evalExpr(cond, row, columns));
+    }
+
+    /** 递归求值表达式：字面量/列引用直接取值，二元表达式按运算符分发 */
+    private Object evalExpr(ASTNode expr, List<Object> row, List<String> columns) {
+        if (expr instanceof ASTNode.LiteralExpr literal) {
+            return literalValue(literal);
+        }
+        if (expr instanceof ASTNode.ColumnRef ref) {
+            int index = columns.indexOf(ref.getName());
+            if (index < 0) {
+                throw new IllegalArgumentException("列不存在: " + ref.getName());
+            }
+            return row.get(index);
+        }
+        if (expr instanceof ASTNode.BinaryExpr binary) {
+            return evalBinary(binary, row, columns);
+        }
+        throw new IllegalArgumentException("不支持的表达式节点: " + expr.getClass().getSimpleName());
+    }
+
+    /** 二元表达式求值：逻辑运算短路求值；算术/比较按数值或字符串适配 */
+    private Object evalBinary(ASTNode.BinaryExpr binary, List<Object> row, List<String> columns) {
+        String op = binary.getOp();
+
+        // 逻辑运算（Parser 将关键字 AND/OR 规范化为 AND/OR，&& / || 保持原样）
+        if ("&&".equals(op) || "AND".equalsIgnoreCase(op)) {
+            if (!toBoolean(evalExpr(binary.getLeft(), row, columns))) {
+                return false; // 短路
+            }
+            return toBoolean(evalExpr(binary.getRight(), row, columns));
+        }
+        if ("||".equals(op) || "OR".equalsIgnoreCase(op)) {
+            if (toBoolean(evalExpr(binary.getLeft(), row, columns))) {
+                return true; // 短路
+            }
+            return toBoolean(evalExpr(binary.getRight(), row, columns));
+        }
+
+        Object left = evalExpr(binary.getLeft(), row, columns);
+        Object right = evalExpr(binary.getRight(), row, columns);
+        Double a = toDouble(left);
+        Double b = toDouble(right);
+        if (a != null && b != null) {
+            switch (op) {
+                case "+" -> { return a + b; }
+                case "-" -> { return a - b; }
+                case "*" -> { return a * b; }
+                case "/" -> {
+                    if (b == 0) {
+                        throw new IllegalArgumentException("除数为零");
+                    }
+                    return a / b;
+                }
+                default -> { return compare(a, op, b); }
+            }
+        }
+        return compare(String.valueOf(left), op, String.valueOf(right));
     }
 
     private boolean compare(double left, String op, double right) {
         return switch (op) {
-            case "=" -> left == right;
+            case "=", "==" -> left == right;
             case "!=", "<>" -> left != right;
             case ">" -> left > right;
             case "<" -> left < right;
@@ -314,7 +360,7 @@ public class SqlEngine {
     private boolean compare(String left, String op, String right) {
         int cmp = left.compareTo(right);
         return switch (op) {
-            case "=" -> left.equals(right);
+            case "=", "==" -> left.equals(right);
             case "!=", "<>" -> !left.equals(right);
             case ">" -> cmp > 0;
             case "<" -> cmp < 0;
@@ -324,7 +370,31 @@ public class SqlEngine {
         };
     }
 
-    /** 对象转 Double，失败返回 null（用于判断能否数值比较） */
+    /** 字面量取值：NUMBER 转数值，BOOLEAN 转布尔，STRING 保持文本 */
+    private Object literalValue(ASTNode.LiteralExpr literal) {
+        return switch (literal.getKind()) {
+            case NUMBER -> toNumber(literal.getValue());
+            case STRING -> literal.getValue();
+            case BOOLEAN -> "TRUE".equals(literal.getValue());
+        };
+    }
+
+    /** 对象转 Boolean：支持布尔、TRUE/FALSE 文本与数字（非 0 为真） */
+    private boolean toBoolean(Object value) {
+        if (value instanceof Boolean b) {
+            return b;
+        }
+        if ("TRUE".equalsIgnoreCase(String.valueOf(value))) {
+            return true;
+        }
+        if ("FALSE".equalsIgnoreCase(String.valueOf(value))) {
+            return false;
+        }
+        Double number = toDouble(value);
+        return number != null && number != 0;
+    }
+
+    /** 对象转 Double，失败返回 null（用于判断能否数值运算/比较） */
     private Double toDouble(Object value) {
         if (value instanceof Number number) {
             return number.doubleValue();
@@ -347,10 +417,15 @@ public class SqlEngine {
 
     // ====================== 内置示例数据 ======================
 
-    /** 初始化 student / course / teacher 三张示例表 */
+    /** 初始化 student / course / teacher 三张示例表（列带类型，供语义校验） */
     private void initSampleData() {
         tables.put("student", new TableData(
-                List.of("id", "name", "age", "grade"),
+                List.of(
+                        new CatalogImpl.ColumnInfo("id", CatalogImpl.DataType.INT),
+                        new CatalogImpl.ColumnInfo("name", CatalogImpl.DataType.VARCHAR),
+                        new CatalogImpl.ColumnInfo("age", CatalogImpl.DataType.INT),
+                        new CatalogImpl.ColumnInfo("grade", CatalogImpl.DataType.VARCHAR)
+                ),
                 new ArrayList<>(List.of(
                         row(1, "Alice", 20, "A"),
                         row(2, "Bob", 22, "B+"),
@@ -360,7 +435,11 @@ public class SqlEngine {
                 ))
         ));
         tables.put("course", new TableData(
-                List.of("cid", "title", "credit"),
+                List.of(
+                        new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                        new CatalogImpl.ColumnInfo("title", CatalogImpl.DataType.VARCHAR),
+                        new CatalogImpl.ColumnInfo("credit", CatalogImpl.DataType.INT)
+                ),
                 new ArrayList<>(List.of(
                         row(101, "Database", 4),
                         row(102, "Operating Sys", 3),
@@ -368,7 +447,11 @@ public class SqlEngine {
                 ))
         ));
         tables.put("teacher", new TableData(
-                List.of("tid", "name", "dept"),
+                List.of(
+                        new CatalogImpl.ColumnInfo("tid", CatalogImpl.DataType.INT),
+                        new CatalogImpl.ColumnInfo("name", CatalogImpl.DataType.VARCHAR),
+                        new CatalogImpl.ColumnInfo("dept", CatalogImpl.DataType.VARCHAR)
+                ),
                 new ArrayList<>(List.of(
                         row(1, "Yao Xin", "Computer"),
                         row(2, "Gui Ning", "Computer"),
@@ -377,8 +460,8 @@ public class SqlEngine {
         ));
     }
 
-    /** 便捷构造一行数据 */
+    /** 便捷构造一行数据（可变列表，支持 UPDATE 就地修改） */
     private List<Object> row(Object... cells) {
-        return Arrays.asList(cells);
+        return new ArrayList<>(Arrays.asList(cells));
     }
 }
