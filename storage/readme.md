@@ -1,6 +1,6 @@
 # 存储核心（storage_core）输入输出规范
 
-存储核心是一个独立的可执行程序，由 Semantic Analyzer 通过命令行参数传入
+存储核心是一个独立的可执行程序，由 Semantic Analyzer 通过标准输入（stdin）传入
 **physic plan（物理执行计划）**，执行完毕后向标准输出打印返回结果的 JSON。
 
 ## 1. 输入格式
@@ -8,10 +8,10 @@
 ### 1.1 调用命令
 
 ```bash
-storage_core.exe "<physic_plan_json>"
+echo '<physic_plan_json>' | storage_core.exe
 ```
 
-- 参数：**一个**字符串，即 physic plan 构成的 JSON，位于 `argv[1]`。
+- 输入：通过**标准输入（stdin）**传入，内容为 physic plan 构成的 JSON 字符串。
 - 该 JSON 由 Semantic Analyzer 在语义分析后生成，作为唯一的输入传给存储核心。
 
 ### 1.2 physic plan JSON 结构
