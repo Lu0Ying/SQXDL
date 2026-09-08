@@ -1,1 +1,1 @@
-g++ storage_core.cpp scan_op.cpp filter_op.cpp project_op.cpp insert_op.cpp update_op.cpp delete_op.cpp create_table_op.cpp -o ..\storage_core.exe
+g++ storage_core.cpp scan_op.cpp filter_op.cpp project_op.cpp insert_op.cpp update_op.cpp delete_op.cpp create_table_op.cpp show_tables_op.cpp delete_table_op.cpp -o ..\storage_core.exe

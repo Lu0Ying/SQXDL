@@ -1,118 +1,260 @@
 package com.sqxdl.semantic;
 
 import com.sqxdl.parser.ASTNode;
+import com.sqxdl.parser.SqxdlException;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 语义分析器（B 组）。
  * 职责：遍历 AST，借助 {@link CatalogImpl} 校验语义合法性。
- * 校验失败时抛出带行列号定位的 IllegalArgumentException，由上层捕获后
+ * 校验失败时抛出 {@link SqxdlException}，由上层捕获后
  * 打印错误并继续下一轮 REPL，保证程序不崩溃。
+ *
+ * 语义分析阶段完成的工作：
+ *   1. 表存在性检查
+ *   2. 列存在性检查
+ *   3. 类型兼容性检查
+ *   4. SELECT * 展开为具体列名（通过 getExpandedColumns 获取）
  */
 public class SemanticAnalyzer {
 
-    /** 数据字典，提供表/列元数据（与 PlanGenerator 共享同一实例） */
     private final CatalogImpl catalog;
+    private final Map<ASTNode.SelectStmt, List<String>> expandedSelectLists = new HashMap<>();
 
     public SemanticAnalyzer(CatalogImpl catalog) {
         this.catalog = catalog;
     }
 
     /**
-     * 对 AST 做语义检查，发现错误时抛出带定位信息的异常。
+     * 对 AST 做语义检查，发现错误时抛出带定位信息的 {@link SqxdlException}。
      *
      * @param ast 语法树根节点
      */
     public void analyze(ASTNode ast) {
         if (ast instanceof ASTNode.SelectStmt stmt) {
-            checkTable(stmt.getTableName(), stmt);
-            checkSelectColumns(stmt);
-            checkCondition(stmt.getWhereCond(), stmt.getTableName(), stmt);
+            analyzeSelectStmt(stmt);
         } else if (ast instanceof ASTNode.InsertStmt stmt) {
-            checkTable(stmt.getTableName(), stmt);
-            checkInsert(stmt);
+            analyzeInsertStmt(stmt);
         } else if (ast instanceof ASTNode.UpdateStmt stmt) {
-            checkTable(stmt.getTableName(), stmt);
-            checkColumns(stmt.getTableName(), stmt.getAssignments().keySet(), stmt);
-            checkCondition(stmt.getWhereCond(), stmt.getTableName(), stmt);
+            analyzeUpdateStmt(stmt);
         } else if (ast instanceof ASTNode.DeleteStmt stmt) {
-            checkTable(stmt.getTableName(), stmt);
-            checkCondition(stmt.getWhereCond(), stmt.getTableName(), stmt);
+            analyzeDeleteStmt(stmt);
         } else if (ast instanceof ASTNode.CreateTableStmt stmt) {
-            if (catalog.tableExists(stmt.getTableName())) {
-                throw semanticError("表 " + stmt.getTableName() + " 已存在", stmt);
-            }
+            analyzeCreateTableStmt(stmt);
         } else {
-            throw semanticError("不支持的语句类型: " + ast.getClass().getSimpleName(), ast);
-        }
-    }
-
-    /** 校验表存在性 */
-    private void checkTable(String tableName, ASTNode node) {
-        if (!catalog.tableExists(tableName)) {
-            throw semanticError("表 " + tableName + " 不存在", node);
-        }
-    }
-
-    /** 校验 SELECT 列清单：* 表示全部列（由计划生成阶段展开），其余列必须属于该表 */
-    private void checkSelectColumns(ASTNode.SelectStmt stmt) {
-        checkColumns(stmt.getTableName(), stmt.getSelectList(), stmt);
-    }
-
-    /** 校验 INSERT：列与值数量一致，且列属于该表 */
-    private void checkInsert(ASTNode.InsertStmt stmt) {
-        List<String> columns = stmt.getColumns();
-        if (!columns.isEmpty()) {
-            checkColumns(stmt.getTableName(), columns, stmt);
-        }
-        List<ASTNode.LiteralExpr> values = stmt.getValues();
-        // 未指定列清单时，值的个数必须等于建表列数
-        int expected = columns.isEmpty()
-                ? catalog.getColumns(stmt.getTableName()).size()
-                : columns.size();
-        if (values.size() != expected) {
-            throw semanticError("值的个数(" + values.size() + ")与列数(" + expected + ")不一致", stmt);
-        }
-    }
-
-    /** 校验一组列名是否都属于指定表；"*" 表示全部列，跳过校验 */
-    private void checkColumns(String tableName, Iterable<String> columns, ASTNode node) {
-        for (String column : columns) {
-            if ("*".equals(column)) {
-                continue;
-            }
-            if (!catalog.getColumns(tableName).contains(column)) {
-                throw semanticError("表 " + tableName + " 中不存在列 " + column, node);
-            }
+            throw error("不支持的语句类型: " + ast.getClass().getSimpleName(), ast);
         }
     }
 
     /**
-     * 校验条件表达式：仅支持 列 op 字面量 的二元比较，
-     * 要求列属于指定表，且数字列不与字符串字面量比较。
+     * 获取 SELECT * 展开后的列名清单。
+     * 必须在 analyze() 之后调用。
+     *
+     * @param stmt SELECT 语句节点
+     * @return 展开后的列名列表
      */
-    private void checkCondition(ASTNode cond, String tableName, ASTNode node) {
-        // 无 WHERE 子句时 cond 为 null，直接通过
+    public List<String> getExpandedColumns(ASTNode.SelectStmt stmt) {
+        return expandedSelectLists.get(stmt);
+    }
+
+    // ========== SELECT ==========
+
+    private void analyzeSelectStmt(ASTNode.SelectStmt stmt) {
+        String tableName = stmt.getTableName();
+        checkTableExists(tableName, stmt);
+
+        List<String> selectList = stmt.getSelectList();
+
+        // SELECT * 展开
+        if (selectList.size() == 1 && "*".equals(selectList.get(0))) {
+            List<String> allColumns = catalog.getColumns(tableName);
+            expandedSelectLists.put(stmt, allColumns);
+        } else {
+            checkSelectColumns(tableName, selectList, stmt);
+            expandedSelectLists.put(stmt, selectList);
+        }
+
+        // 检查 WHERE 条件
+        analyzeCondition(stmt.getWhereCond(), tableName);
+    }
+
+    private void checkSelectColumns(String tableName, List<String> columns, ASTNode node) {
+        for (String col : columns) {
+            if (!catalog.columnExists(tableName, col)) {
+                throw error("表 " + tableName + " 中不存在列 " + col, node);
+            }
+        }
+    }
+
+    // ========== INSERT ==========
+
+    private void analyzeInsertStmt(ASTNode.InsertStmt stmt) {
+        String tableName = stmt.getTableName();
+        checkTableExists(tableName, stmt);
+
+        List<String> columns = stmt.getColumns();
+        List<ASTNode.LiteralExpr> values = stmt.getValues();
+
+        int expectedCount;
+        if (columns.isEmpty()) {
+            expectedCount = catalog.getColumns(tableName).size();
+        } else {
+            for (String col : columns) {
+                if (!catalog.columnExists(tableName, col)) {
+                    throw error("表 " + tableName + " 中不存在列 " + col, stmt);
+                }
+            }
+            expectedCount = columns.size();
+        }
+
+        if (values.size() != expectedCount) {
+            throw error("值的个数(" + values.size() + ")与列数(" + expectedCount + ")不一致", stmt);
+        }
+
+        // 类型检查：每个值的类型要和对应列的类型兼容
+        List<String> targetColumns = columns.isEmpty()
+                ? catalog.getColumns(tableName)
+                : columns;
+        for (int i = 0; i < values.size(); i++) {
+            ASTNode.LiteralExpr value = values.get(i);
+            CatalogImpl.DataType colType = catalog.getColumnType(tableName, targetColumns.get(i));
+            CatalogImpl.DataType valType = literalType(value);
+            if (!typeCompatible(colType, valType)) {
+                throw error("第 " + (i + 1) + " 个值的类型与列 " + targetColumns.get(i)
+                        + " 的类型不兼容", value);
+            }
+        }
+    }
+
+    // ========== UPDATE ==========
+
+    private void analyzeUpdateStmt(ASTNode.UpdateStmt stmt) {
+        String tableName = stmt.getTableName();
+        checkTableExists(tableName, stmt);
+
+        Map<String, ASTNode.LiteralExpr> assignments = stmt.getAssignments();
+        for (Map.Entry<String, ASTNode.LiteralExpr> entry : assignments.entrySet()) {
+            String colName = entry.getKey();
+            ASTNode.LiteralExpr value = entry.getValue();
+            if (!catalog.columnExists(tableName, colName)) {
+                throw error("表 " + tableName + " 中不存在列 " + colName, stmt);
+            }
+            CatalogImpl.DataType colType = catalog.getColumnType(tableName, colName);
+            CatalogImpl.DataType valType = literalType(value);
+            if (!typeCompatible(colType, valType)) {
+                throw error("列 " + colName + " 的类型与值的类型不兼容", value);
+            }
+        }
+
+        analyzeCondition(stmt.getWhereCond(), tableName);
+    }
+
+    // ========== DELETE ==========
+
+    private void analyzeDeleteStmt(ASTNode.DeleteStmt stmt) {
+        String tableName = stmt.getTableName();
+        checkTableExists(tableName, stmt);
+        analyzeCondition(stmt.getWhereCond(), tableName);
+    }
+
+    // ========== CREATE TABLE ==========
+
+    private void analyzeCreateTableStmt(ASTNode.CreateTableStmt stmt) {
+        if (catalog.tableExists(stmt.getTableName())) {
+            throw error("表 " + stmt.getTableName() + " 已存在", stmt);
+        }
+    }
+
+    // ========== 条件表达式分析（递归） ==========
+
+    private void analyzeCondition(ASTNode cond, String tableName) {
         if (cond == null) {
             return;
         }
-        if (!(cond instanceof ASTNode.BinaryExpr expr)) {
-            throw semanticError("不支持的条件表达式: " + cond, cond);
+        CatalogImpl.DataType resultType = analyzeExpr(cond, tableName);
+        if (resultType != CatalogImpl.DataType.VARCHAR) {
+            // 简化：条件表达式结果类型我们暂不严格要求 BOOLEAN，
+            // 因为我们类型系统比较简单，只要能比较就行
         }
-        if (!(expr.getLeft() instanceof ASTNode.ColumnRef column)) {
-            throw semanticError("比较运算左侧必须是列名", expr.getLeft());
-        }
-        if (!(expr.getRight() instanceof ASTNode.LiteralExpr)) {
-            throw semanticError("比较运算右侧必须是常量", expr.getRight());
-        }
-        checkColumns(tableName, List.of(column.getName()), node);
-        // 说明：建表契约只有列名没有列类型（见 storage/readme.md），
-        // 列与字面量的类型兼容性由存储核心在比较时校验（TYPE_MISMATCH 错误码）
     }
 
-    /** 构造带行列号定位的错误信息 */
-    private IllegalArgumentException semanticError(String message, ASTNode node) {
-        return new IllegalArgumentException(message + " (位置 " + node.getLine() + ":" + node.getCol() + ")");
+    /**
+     * 分析表达式，返回其推断类型。
+     * 递归访问表达式树的所有节点。
+     */
+    private CatalogImpl.DataType analyzeExpr(ASTNode expr, String tableName) {
+        if (expr instanceof ASTNode.ColumnRef col) {
+            return analyzeColumnRef(col, tableName);
+        } else if (expr instanceof ASTNode.LiteralExpr lit) {
+            return literalType(lit);
+        } else if (expr instanceof ASTNode.BinaryExpr bin) {
+            return analyzeBinaryExpr(bin, tableName);
+        } else {
+            throw error("不支持的表达式类型: " + expr.getClass().getSimpleName(), expr);
+        }
+    }
+
+    private CatalogImpl.DataType analyzeColumnRef(ASTNode.ColumnRef col, String tableName) {
+        String colName = col.getName();
+        if (!catalog.columnExists(tableName, colName)) {
+            throw error("表 " + tableName + " 中不存在列 " + colName, col);
+        }
+        return catalog.getColumnType(tableName, colName);
+    }
+
+    private CatalogImpl.DataType analyzeBinaryExpr(ASTNode.BinaryExpr expr, String tableName) {
+        CatalogImpl.DataType leftType = analyzeExpr(expr.getLeft(), tableName);
+        CatalogImpl.DataType rightType = analyzeExpr(expr.getRight(), tableName);
+
+        String op = expr.getOp();
+
+        if (isComparisonOp(op)) {
+            if (!typeCompatible(leftType, rightType)) {
+                throw error("比较运算符 " + op + " 两侧类型不兼容: "
+                        + leftType + " vs " + rightType, expr);
+            }
+            return leftType;
+        } else if (isArithmeticOp(op)) {
+            if (leftType != CatalogImpl.DataType.INT || rightType != CatalogImpl.DataType.INT) {
+                throw error("算术运算符 " + op + " 两侧都必须是整数类型", expr);
+            }
+            return CatalogImpl.DataType.INT;
+        } else {
+            throw error("不支持的运算符: " + op, expr);
+        }
+    }
+
+    // ========== 辅助方法 ==========
+
+    private void checkTableExists(String tableName, ASTNode node) {
+        if (!catalog.tableExists(tableName)) {
+            throw error("表 " + tableName + " 不存在", node);
+        }
+    }
+
+    private CatalogImpl.DataType literalType(ASTNode.LiteralExpr lit) {
+        return lit.getKind() == ASTNode.LiteralExpr.Kind.NUMBER
+                ? CatalogImpl.DataType.INT
+                : CatalogImpl.DataType.VARCHAR;
+    }
+
+    private boolean typeCompatible(CatalogImpl.DataType a, CatalogImpl.DataType b) {
+        return a == b;
+    }
+
+    private boolean isComparisonOp(String op) {
+        return op.equals("=") || op.equals("!=") || op.equals(">")
+                || op.equals("<") || op.equals(">=") || op.equals("<=");
+    }
+
+    private boolean isArithmeticOp(String op) {
+        return op.equals("+") || op.equals("-") || op.equals("*") || op.equals("/");
+    }
+
+    private SqxdlException error(String message, ASTNode node) {
+        return new SqxdlException(node.getLine(), node.getCol(), message);
     }
 }

@@ -17,10 +17,15 @@
     <description>执行模块：REPL 入口 Main、执行器 Executor</description>
 
     <dependencies>
-        <!-- 依赖语义模块，传递引入 parser -->
+        <!-- 依赖语义模块 -->
         <dependency>
             <groupId>com.sqxdl</groupId>
             <artifactId>sqxdl-semantic</artifactId>
+        </dependency>
+        <!-- 显式依赖解析模块，直接引用统一异常类 SqxdlException 等 -->
+        <dependency>
+            <groupId>com.sqxdl</groupId>
+            <artifactId>sqxdl-parser</artifactId>
         </dependency>
     </dependencies>
 </project>
