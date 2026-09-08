@@ -30,6 +30,7 @@ echo '<physic_plan_json>' | storage_core.exe
 | `update` | 更新满足条件的行 | 行数 |
 | `delete` | 删除满足条件的行 | 行数 |
 | `createTable` | 建表 | 行数（0） |
+| `showTables` | 显示所有表（对应 SHOW TABLES） | 数据集（单列 `table`） |
 
 条件表达式（`condition` 字段）通过 `type` 区分节点类型：
 
@@ -120,6 +121,17 @@ echo '<physic_plan_json>' | storage_core.exe
 }
 ```
 
+**列出所有表（SHOW TABLES）**
+
+```json
+{
+  "op": "showTables"
+}
+```
+
+> `showTables` 为单个对象（无 `child`、无 `table`），返回结果为数据集，
+> 固定单列 `table`，每行为一个表名。
+
 > `update` / `delete` 的 `condition` 可省略，省略表示作用于全表所有行。
 
 ## 2. 输出格式
@@ -152,7 +164,24 @@ echo '<physic_plan_json>' | storage_core.exe
 - `columns`：结果列名列表，与 `project` 的 `columns` 一致。
 - `rows`：二维数组，每个元素为一行，字段顺序与 `columns` 一致。
 
-### 2.2 INSERT / UPDATE / DELETE：返回行数
+### 2.2 SHOW TABLES：返回表名数据集
+
+```json
+{
+  "success": true,
+  "type": "resultset",
+  "columns": ["table"],
+  "rows": [
+    ["student"],
+    ["course"]
+  ]
+}
+```
+
+- `columns` 固定为 `["table"]`。
+- `rows`：每个元素为单元素数组，即一个表名；无表时为空数组。
+
+### 2.3 INSERT / UPDATE / DELETE：返回行数
 
 ```json
 {
@@ -165,7 +194,7 @@ echo '<physic_plan_json>' | storage_core.exe
 - `rowsAffected`：受影响的行数（`insert` 为 1，`update`/`delete` 为匹配行数，
   `createTable` 为 0）。
 
-### 2.3 出错：返回错误信息
+### 2.4 出错：返回错误信息
 
 ```json
 {
