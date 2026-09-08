@@ -3,6 +3,7 @@ package com.sqxdl.semantic;
 import com.sqxdl.parser.ASTNode;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 逻辑执行计划节点基类，是语义分析/优化器与执行器之间的接口契约。
@@ -84,6 +85,129 @@ public abstract class PlanNode {
         @Override
         public String toString() {
             return "Project{columns=" + columns + ", child=" + child + "}";
+        }
+    }
+
+    /**
+     * 插入计划：向 tableName 表插入一行，对应 INSERT 语句。
+     * values 为字面量清单，顺序与 columns 对应（columns 为空时按建表顺序）。
+     */
+    public static class InsertPlan extends PlanNode {
+
+        private final String tableName;
+        private final List<String> columns;
+        private final List<ASTNode.LiteralExpr> values;
+
+        public InsertPlan(String tableName, List<String> columns, List<ASTNode.LiteralExpr> values) {
+            this.tableName = tableName;
+            this.columns = columns;
+            this.values = values;
+        }
+
+        public String getTableName() {
+            return tableName;
+        }
+
+        public List<String> getColumns() {
+            return columns;
+        }
+
+        public List<ASTNode.LiteralExpr> getValues() {
+            return values;
+        }
+
+        @Override
+        public String toString() {
+            return "Insert{table=" + tableName + ", columns=" + columns + ", values=" + values + "}";
+        }
+    }
+
+    /**
+     * 更新计划：更新满足条件的行，对应 UPDATE 语句。
+     * assignments 为列名 -> 新值；condition 为 null 时作用于全表。
+     */
+    public static class UpdatePlan extends PlanNode {
+
+        private final String tableName;
+        private final Map<String, ASTNode.LiteralExpr> assignments;
+        private final ASTNode condition;
+
+        public UpdatePlan(String tableName, Map<String, ASTNode.LiteralExpr> assignments, ASTNode condition) {
+            this.tableName = tableName;
+            this.assignments = assignments;
+            this.condition = condition;
+        }
+
+        public String getTableName() {
+            return tableName;
+        }
+
+        public Map<String, ASTNode.LiteralExpr> getAssignments() {
+            return assignments;
+        }
+
+        public ASTNode getCondition() {
+            return condition;
+        }
+
+        @Override
+        public String toString() {
+            return "Update{table=" + tableName + ", set=" + assignments + ", cond=" + condition + "}";
+        }
+    }
+
+    /**
+     * 删除计划：删除满足条件的行，对应 DELETE 语句。
+     * condition 为 null 时作用于全表。
+     */
+    public static class DeletePlan extends PlanNode {
+
+        private final String tableName;
+        private final ASTNode condition;
+
+        public DeletePlan(String tableName, ASTNode condition) {
+            this.tableName = tableName;
+            this.condition = condition;
+        }
+
+        public String getTableName() {
+            return tableName;
+        }
+
+        public ASTNode getCondition() {
+            return condition;
+        }
+
+        @Override
+        public String toString() {
+            return "Delete{table=" + tableName + ", cond=" + condition + "}";
+        }
+    }
+
+    /**
+     * 建表计划：创建表并登记列名清单，对应 CREATE TABLE 语句。
+     */
+    public static class CreateTablePlan extends PlanNode {
+
+        private final String tableName;
+        private final List<String> columns;
+
+        public CreateTablePlan(String tableName, List<String> columns) {
+            this.tableName = tableName;
+            this.columns = columns;
+        }
+
+        public String getTableName() {
+            return tableName;
+        }
+
+        public List<String> getColumns() {
+            return columns;
+        }
+
+        @Override
+        public String toString() {
+            return "CreateTable{table=" + tableName + ", columns=" + columns + "}";
         }
     }
 }
