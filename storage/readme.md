@@ -30,7 +30,8 @@ echo '<physic_plan_json>' | storage_core.exe
 | `update` | 更新满足条件的行 | 行数 |
 | `delete` | 删除满足条件的行 | 行数 |
 | `createTable` | 建表 | 行数（0） |
-| `showTables` | 显示所有表（对应 SHOW TABLES） | 数据集（单列 `table`） |
+| `showTables` | 列出当前所有表（对应 SHOW TABLES） | 数据集（单列 `table`） |
+| `deleteTable` | 删表（对应 DROP TABLE） | 行数（0） |
 
 条件表达式（`condition` 字段）通过 `type` 区分节点类型：
 
@@ -132,6 +133,18 @@ echo '<physic_plan_json>' | storage_core.exe
 > `showTables` 为单个对象（无 `child`、无 `table`），返回结果为数据集，
 > 固定单列 `table`，每行为一个表名。
 
+**删表（DROP TABLE student）**
+
+```json
+{
+  "op": "deleteTable",
+  "table": "student"
+}
+```
+
+> `deleteTable` 为单个对象（无 `child`），表不存在时返回错误
+> `TABLE_NOT_FOUND`。
+
 > `update` / `delete` 的 `condition` 可省略，省略表示作用于全表所有行。
 
 ## 2. 输出格式
@@ -192,7 +205,7 @@ echo '<physic_plan_json>' | storage_core.exe
 ```
 
 - `rowsAffected`：受影响的行数（`insert` 为 1，`update`/`delete` 为匹配行数，
-  `createTable` 为 0）。
+  `createTable` / `deleteTable` 为 0）。
 
 ### 2.4 出错：返回错误信息
 

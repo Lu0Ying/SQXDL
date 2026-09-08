@@ -9,6 +9,7 @@
 #include "delete_op.h"
 #include "create_table_op.h"
 #include "show_tables_op.h"
+#include "delete_table_op.h"
 
 int main()
 {
@@ -57,6 +58,10 @@ int main()
     else if (op == "showTables")
     {
         result = execute_show_tables(physic_plan);
+    }
+    else if (op == "deleteTable")
+    {
+        result = execute_delete_table(physic_plan);
     }
     else
     {
