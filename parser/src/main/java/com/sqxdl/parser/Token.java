@@ -17,7 +17,8 @@ public class Token {
         /** 运算符，如 =、&lt;、&gt;、+、- */
         OPERATOR,
         /** 分隔符，如 ,、;、(、) */
-        DELIMITER
+        DELIMITER,
+        EOF
     }
 
     private final Type type;
