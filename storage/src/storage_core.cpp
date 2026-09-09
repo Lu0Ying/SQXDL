@@ -11,6 +11,7 @@
 #include "create_table_op.h"
 #include "show_tables_op.h"
 #include "delete_table_op.h"
+#include "describe_table_op.h"
 
 // 服务式运行：从 stdin 逐行读取 physic plan，每行执行一次并输出一行结果；
 // 读取到 "exit" 或 {"op":"exit"} 时退出进程；EOF 同样退出。
@@ -92,6 +93,10 @@ int main()
         else if (op == "deleteTable")
         {
             result = execute_delete_table(physic_plan);
+        }
+        else if (op == "describeTable")
+        {
+            result = execute_describe_table(physic_plan);
         }
         else
         {

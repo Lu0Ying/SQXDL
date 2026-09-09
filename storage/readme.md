@@ -50,6 +50,8 @@ storage_core.exe
 | `createTable` | 建表 | 行数（0） |
 | `showTables` | 列出当前所有表（对应 SHOW TABLES） | 数据集（单列 `table`） |
 | `deleteTable` | 删表（对应 DROP TABLE） | 行数（0） |
+| `describeTable` | 查看表结构（对应 DESCRIBE / DESC） | 数据集（单列 `field`） |
+| `exit` | 退出服务（进程结束，不产生输出） | 无 |
 
 条件表达式（`condition` 字段）通过 `type` 区分节点类型：
 
@@ -163,6 +165,18 @@ storage_core.exe
 > `deleteTable` 为单个对象（无 `child`），表不存在时返回错误
 > `TABLE_NOT_FOUND`。
 
+**查看表结构（DESCRIBE student）**
+
+```json
+{
+  "op": "describeTable",
+  "table": "student"
+}
+```
+
+> `describeTable` 为单个对象（无 `child`），返回该表按建表顺序排列的列名
+> 数据集；表不存在时返回错误 `TABLE_NOT_FOUND`。
+
 > `update` / `delete` 的 `condition` 可省略，省略表示作用于全表所有行。
 
 ## 2. 输出格式
@@ -212,7 +226,25 @@ storage_core.exe
 - `columns` 固定为 `["table"]`。
 - `rows`：每个元素为单元素数组，即一个表名；无表时为空数组。
 
-### 2.3 INSERT / UPDATE / DELETE：返回行数
+### 2.3 DESCRIBE TABLE：返回表结构数据集
+
+```json
+{
+  "success": true,
+  "type": "resultset",
+  "columns": ["field"],
+  "rows": [
+    ["id"],
+    ["name"]
+  ]
+}
+```
+
+- `columns` 固定为 `["field"]`。
+- `rows`：每个元素为单元素数组，即一个列名，按建表时的列顺序排列；
+  表不存在时返回 `TABLE_NOT_FOUND` 错误。
+
+### 2.4 INSERT / UPDATE / DELETE：返回行数
 
 ```json
 {
@@ -225,7 +257,7 @@ storage_core.exe
 - `rowsAffected`：受影响的行数（`insert` 为 1，`update`/`delete` 为匹配行数，
   `createTable` / `deleteTable` 为 0）。
 
-### 2.4 出错：返回错误信息
+### 2.5 出错：返回错误信息
 
 ```json
 {
