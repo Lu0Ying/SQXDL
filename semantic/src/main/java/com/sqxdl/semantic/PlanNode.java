@@ -210,4 +210,129 @@ public abstract class PlanNode {
             return "CreateTable{table=" + tableName + ", columns=" + columns + "}";
         }
     }
+
+    // ========== 计划树可视化/调试输出 ==========
+
+    /**
+     * 以缩进树形格式打印计划树，便于调试。
+     * 示例输出：
+     * <pre>
+     * ProjectPlan
+     *   columns: [id, name]
+     *   ├─ FilterPlan
+     *     condition: (age > 18)
+     *     ├─ SeqScanPlan
+     *       table: student
+     * </pre>
+     *
+     * @param plan 计划树根节点
+     * @return 格式化后的字符串
+     */
+    public static String formatPlan(PlanNode plan) {
+        StringBuilder sb = new StringBuilder();
+        formatPlan(sb, plan, 0, true);
+        return sb.toString();
+    }
+
+    /**
+     * 递归格式化计划树节点。
+     *
+     * @param sb    字符串构建器
+     * @param node  当前节点
+     * @param depth 当前缩进深度
+     * @param isLast 是否为父节点的最后一个子节点
+     */
+    private static void formatPlan(StringBuilder sb, PlanNode node, int depth, boolean isLast) {
+        if (node == null) {
+            indent(sb, depth, isLast);
+            sb.append("(null)\n");
+            return;
+        }
+
+        // 节点标题
+        indent(sb, depth, isLast);
+        sb.append(nodeName(node)).append("\n");
+
+        // 节点属性
+        formatNodeDetails(sb, node, depth + 1);
+
+        // 递归子节点
+        if (node instanceof SeqScanPlan) {
+            // 叶子节点，无子节点
+        } else if (node instanceof FilterPlan p) {
+            formatPlan(sb, p.getChild(), depth + 1, true);
+        } else if (node instanceof ProjectPlan p) {
+            formatPlan(sb, p.getChild(), depth + 1, true);
+        }
+    }
+
+    /**
+     * 格式化节点的属性列表。
+     */
+    private static void formatNodeDetails(StringBuilder sb, PlanNode node, int depth) {
+        if (node instanceof SeqScanPlan p) {
+            detailLine(sb, depth, "table", p.getTableName());
+        } else if (node instanceof FilterPlan p) {
+            detailLine(sb, depth, "condition", formatExpr(p.getCondition()));
+        } else if (node instanceof ProjectPlan p) {
+            detailLine(sb, depth, "columns", p.getColumns());
+        } else if (node instanceof InsertPlan p) {
+            detailLine(sb, depth, "table", p.getTableName());
+            detailLine(sb, depth, "columns", p.getColumns());
+            detailLine(sb, depth, "values", formatValues(p.getValues()));
+        } else if (node instanceof UpdatePlan p) {
+            detailLine(sb, depth, "table", p.getTableName());
+            detailLine(sb, depth, "set", formatAssignments(p.getAssignments()));
+            detailLine(sb, depth, "condition", p.getCondition() == null ? "(全表)" : formatExpr(p.getCondition()));
+        } else if (node instanceof DeletePlan p) {
+            detailLine(sb, depth, "table", p.getTableName());
+            detailLine(sb, depth, "condition", p.getCondition() == null ? "(全表)" : formatExpr(p.getCondition()));
+        } else if (node instanceof CreateTablePlan p) {
+            detailLine(sb, depth, "table", p.getTableName());
+            detailLine(sb, depth, "columns", p.getColumns());
+        }
+    }
+
+    /** 输出一条属性行 */
+    private static void detailLine(StringBuilder sb, int depth, String key, Object value) {
+        indent(sb, depth, false);
+        sb.append(key).append(": ").append(value).append("\n");
+    }
+
+    /** 生成缩进 */
+    private static void indent(StringBuilder sb, int depth, boolean isLast) {
+        for (int i = 0; i < depth; i++) {
+            sb.append("  ");
+        }
+    }
+
+    /** 获取节点简短名称 */
+    private static String nodeName(PlanNode node) {
+        if (node instanceof SeqScanPlan) return "SeqScanPlan";
+        if (node instanceof FilterPlan) return "FilterPlan";
+        if (node instanceof ProjectPlan) return "ProjectPlan";
+        if (node instanceof InsertPlan) return "InsertPlan";
+        if (node instanceof UpdatePlan) return "UpdatePlan";
+        if (node instanceof DeletePlan) return "DeletePlan";
+        if (node instanceof CreateTablePlan) return "CreateTablePlan";
+        return node.getClass().getSimpleName();
+    }
+
+    /** 格式化 AST 表达式 */
+    private static String formatExpr(ASTNode expr) {
+        if (expr == null) return "(null)";
+        return expr.toString();
+    }
+
+    /** 格式化值列表 */
+    private static String formatValues(List<ASTNode.LiteralExpr> values) {
+        if (values == null) return "[]";
+        return values.toString();
+    }
+
+    /** 格式化赋值映射 */
+    private static String formatAssignments(Map<String, ASTNode.LiteralExpr> assignments) {
+        if (assignments == null) return "{}";
+        return assignments.toString();
+    }
 }
