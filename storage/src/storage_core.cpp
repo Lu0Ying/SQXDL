@@ -2,6 +2,8 @@
 #include <string>
 #include "nlohmann/json.hpp"
 
+#include "core/storage_error.h"
+
 #include "scan_op.h"
 #include "filter_op.h"
 #include "project_op.h"
@@ -35,75 +37,100 @@ int main()
             break;
         }
 
-        nlohmann::json physic_plan;
+        nlohmann::json result;
         try
         {
-            physic_plan = nlohmann::json::parse(input);
+            const nlohmann::json physic_plan = nlohmann::json::parse(input);
+
+            if (physic_plan.value("op", "") == "exit")
+            {
+                break;
+            }
+
+            const std::string op = physic_plan.value("op", "");
+
+            if (op == "scan")
+            {
+                result = execute_scan(physic_plan);
+            }
+            else if (op == "filter")
+            {
+                result = execute_filter(physic_plan);
+            }
+            else if (op == "project")
+            {
+                result = execute_project(physic_plan);
+            }
+            else if (op == "insert")
+            {
+                result = execute_insert(physic_plan);
+            }
+            else if (op == "update")
+            {
+                result = execute_update(physic_plan);
+            }
+            else if (op == "delete")
+            {
+                result = execute_delete(physic_plan);
+            }
+            else if (op == "createTable")
+            {
+                result = execute_create_table(physic_plan);
+            }
+            else if (op == "showTables")
+            {
+                result = execute_show_tables(physic_plan);
+            }
+            else if (op == "deleteTable")
+            {
+                result = execute_delete_table(physic_plan);
+            }
+            else if (op == "describeTable")
+            {
+                result = execute_describe_table(physic_plan);
+            }
+            else
+            {
+                result = {
+                    {"success", false},
+                    {"type", "error"},
+                    {"error", {{"code", "INVALID_PLAN"}, {"message", "Unknown operation type"}}}};
+            }
         }
         catch (const nlohmann::json::parse_error &)
-        {
-            nlohmann::json parse_error_result = {
-                {"success", false},
-                {"type", "error"},
-                {"error", {{"code", "INVALID_PLAN"}, {"message", "Physic plan JSON parse failed"}}}};
-            std::cout << parse_error_result.dump() << std::endl;
-            continue;
-        }
-
-        if (physic_plan.value("op", "") == "exit")
-        {
-            break;
-        }
-
-        std::string op = physic_plan.value("op", "");
-
-        nlohmann::json result;
-        if (op == "scan")
-        {
-            result = execute_scan(physic_plan);
-        }
-        else if (op == "filter")
-        {
-            result = execute_filter(physic_plan);
-        }
-        else if (op == "project")
-        {
-            result = execute_project(physic_plan);
-        }
-        else if (op == "insert")
-        {
-            result = execute_insert(physic_plan);
-        }
-        else if (op == "update")
-        {
-            result = execute_update(physic_plan);
-        }
-        else if (op == "delete")
-        {
-            result = execute_delete(physic_plan);
-        }
-        else if (op == "createTable")
-        {
-            result = execute_create_table(physic_plan);
-        }
-        else if (op == "showTables")
-        {
-            result = execute_show_tables(physic_plan);
-        }
-        else if (op == "deleteTable")
-        {
-            result = execute_delete_table(physic_plan);
-        }
-        else if (op == "describeTable")
-        {
-            result = execute_describe_table(physic_plan);
-        }
-        else
         {
             result = {
                 {"success", false},
                 {"type", "error"},
-                {"error", {{"code", "INVALID_PLAN"}, {"message", "Unknown operation type"}}}};
+                {"error", {{"code", "INVALID_PLAN"}, {"message", "Physic plan JSON parse failed"}}}};
+        }
+        catch (const nlohmann::json::exception &)
+        {
+            result = {
+                {"success", false},
+                {"type", "error"},
+                {"error", {{"code", "INVALID_PLAN"}, {"message", "物理计划结构非法"}}}};
+        }
+        catch (const StorageError &e)
+        {
+            result = {
+                {"success", false},
+                {"type", "error"},
+                {"error", {{"code", e.code()}, {"message", e.what()}}}};
+        }
+        catch (const std::exception &e)
+        {
+            result = {
+                {"success", false},
+                {"type", "error"},
+                {"error", {{"code", "INTERNAL_ERROR"}, {"message", e.what()}}}};
+        }
+        catch (...)
+        {
+            result = {
+                {"success", false},
+                {"type", "error"},
+                {"error", {{"code", "INTERNAL_ERROR"}, {"message", "未知错误"}}}};
         }
 
         std::cout << result.dump() << std::endl;

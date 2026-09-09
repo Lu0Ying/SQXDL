@@ -24,7 +24,7 @@ storage_core.exe
 一次会话的输入输出示意（`>` 为输入，`<` 为输出）：
 
 ```text
-> {"op":"createTable","table":"student","columns":["id","name"]}
+> {"op":"createTable","table":"student","columns":[{"name":"id","type":"INT"},{"name":"name","type":"VARCHAR"}]}
 < {"success":true,"type":"rowcount","rowsAffected":0}
 > {"op":"showTables"}
 < {"success":true,"type":"resultset","columns":["table"],"rows":[["student"]]}
@@ -132,15 +132,21 @@ storage_core.exe
 }
 ```
 
-**建表（CREATE TABLE student (id, name)）**
+**建表（CREATE TABLE student (id INT, name VARCHAR)）**
 
 ```json
 {
   "op": "createTable",
   "table": "student",
-  "columns": ["id", "name"]
+  "columns": [
+    { "name": "id", "type": "INT" },
+    { "name": "name", "type": "VARCHAR" }
+  ]
 }
 ```
+
+> `columns` 为列定义数组，每个元素为对象 `{ "name": 列名, "type": 类型 }`；
+> 类型取值 `INT`、`DOUBLE`、`VARCHAR`、`BOOLEAN`（大小写不敏感）。
 
 **列出所有表（SHOW TABLES）**
 
@@ -243,7 +249,7 @@ storage_core.exe
 
 - `columns` 固定为 `["column", "type"]`。
 - `rows`：每个元素为双元素数组 `[列名, 类型]`，按建表时的列顺序排列；
-  类型取值包括 `INT`、`VARCHAR`、`BOOLEAN`。
+  类型取值与建表时一致，包括 `INT`、`DOUBLE`、`VARCHAR`、`BOOLEAN`。
   表不存在时返回 `TABLE_NOT_FOUND` 错误。
 
 ### 2.4 INSERT / UPDATE / DELETE：返回行数
