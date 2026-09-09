@@ -50,7 +50,7 @@ storage_core.exe
 | `createTable` | 建表 | 行数（0） |
 | `showTables` | 列出当前所有表（对应 SHOW TABLES） | 数据集（单列 `table`） |
 | `deleteTable` | 删表（对应 DROP TABLE） | 行数（0） |
-| `describeTable` | 查看表结构（对应 DESCRIBE / DESC） | 数据集（单列 `field`） |
+| `describeTable` | 查看表结构（对应 DESCRIBE / DESC） | 数据集（列 `column` + `type`） |
 | `exit` | 退出服务（进程结束，不产生输出） | 无 |
 
 条件表达式（`condition` 字段）通过 `type` 区分节点类型：
@@ -175,7 +175,7 @@ storage_core.exe
 ```
 
 > `describeTable` 为单个对象（无 `child`），返回该表按建表顺序排列的列名
-> 数据集；表不存在时返回错误 `TABLE_NOT_FOUND`。
+> 与类型数据集；表不存在时返回错误 `TABLE_NOT_FOUND`。
 
 > `update` / `delete` 的 `condition` 可省略，省略表示作用于全表所有行。
 
@@ -232,16 +232,18 @@ storage_core.exe
 {
   "success": true,
   "type": "resultset",
-  "columns": ["field"],
+  "columns": ["column", "type"],
   "rows": [
-    ["id"],
-    ["name"]
+    ["id", "INT"],
+    ["name", "VARCHAR"],
+    ["age", "INT"]
   ]
 }
 ```
 
-- `columns` 固定为 `["field"]`。
-- `rows`：每个元素为单元素数组，即一个列名，按建表时的列顺序排列；
+- `columns` 固定为 `["column", "type"]`。
+- `rows`：每个元素为双元素数组 `[列名, 类型]`，按建表时的列顺序排列；
+  类型取值包括 `INT`、`VARCHAR`、`BOOLEAN`。
   表不存在时返回 `TABLE_NOT_FOUND` 错误。
 
 ### 2.4 INSERT / UPDATE / DELETE：返回行数

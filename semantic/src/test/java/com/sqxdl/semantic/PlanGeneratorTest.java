@@ -868,6 +868,151 @@ class PlanGeneratorTest {
         assertTrue(json.contains("\"child\":{\"op\":\"scan\",\"table\":\"student\"}"));
     }
 
+    // ========== SHOW TABLES ==========
+
+    @Test
+    void generate_showTables() {
+        ASTNode.ShowTablesStmt stmt = new ASTNode.ShowTablesStmt(1, 1);
+        PlanNode plan = generator.generate(stmt);
+        assertInstanceOf(PlanNode.ShowTablesPlan.class, plan);
+    }
+
+    @Test
+    void toJson_showTables() {
+        ASTNode.ShowTablesStmt stmt = new ASTNode.ShowTablesStmt(1, 1);
+        PlanNode plan = generator.generate(stmt);
+        String json = generator.toJson(plan);
+        assertTrue(json.contains("\"op\":\"showTables\""));
+    }
+
+    @Test
+    void formatPlan_showTables() {
+        ASTNode.ShowTablesStmt stmt = new ASTNode.ShowTablesStmt(1, 1);
+        PlanNode plan = generator.generate(stmt);
+        String output = PlanNode.formatPlan(plan);
+        assertTrue(output.contains("ShowTablesPlan"));
+    }
+
+    // ========== DROP TABLE ==========
+
+    @Test
+    void generate_dropTable() {
+        ASTNode.DropTableStmt stmt = new ASTNode.DropTableStmt(1, 1, "student");
+        PlanNode plan = generator.generate(stmt);
+        assertInstanceOf(PlanNode.DropTablePlan.class, plan);
+        assertEquals("student", ((PlanNode.DropTablePlan) plan).getTableName());
+    }
+
+    @Test
+    void toJson_dropTable() {
+        ASTNode.DropTableStmt stmt = new ASTNode.DropTableStmt(1, 1, "course");
+        PlanNode plan = generator.generate(stmt);
+        String json = generator.toJson(plan);
+        assertTrue(json.contains("\"op\":\"dropTable\""));
+        assertTrue(json.contains("\"table\":\"course\""));
+    }
+
+    @Test
+    void formatPlan_dropTable() {
+        ASTNode.DropTableStmt stmt = new ASTNode.DropTableStmt(1, 1, "student");
+        PlanNode plan = generator.generate(stmt);
+        String output = PlanNode.formatPlan(plan);
+        assertTrue(output.contains("DropTablePlan"));
+        assertTrue(output.contains("student"));
+    }
+
+    // ========== AND/OR 优化 ==========
+
+    @Test
+    void optimize_andWithTrue_simplifiesToLeft() {
+        // WHERE (id > 1) AND TRUE → (id > 1)
+        ASTNode.BinaryExpr left = new ASTNode.BinaryExpr(1, 9, ">",
+                new ASTNode.IdentifierExpr(1, 8, "id"), lit(1, 12, "1", Kind.NUMBER));
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, "AND",
+                left, lit(1, 20, "true", Kind.BOOLEAN));
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond);
+        PlanNode plan = generator.generate(stmt);
+
+        // 根节点是 ProjectPlan，child 是 FilterPlan
+        assertInstanceOf(PlanNode.ProjectPlan.class, plan);
+        PlanNode.FilterPlan filter = (PlanNode.FilterPlan) ((PlanNode.ProjectPlan) plan).getChild();
+        ASTNode optimized = filter.getCondition();
+        // 应该化简为左侧的 id > 1
+        assertInstanceOf(ASTNode.BinaryExpr.class, optimized);
+        assertEquals(">", ((ASTNode.BinaryExpr) optimized).getOp());
+    }
+
+    @Test
+    void optimize_orWithFalse_simplifiesToLeft() {
+        // WHERE (id > 1) OR FALSE → (id > 1)
+        ASTNode.BinaryExpr left = new ASTNode.BinaryExpr(1, 9, ">",
+                new ASTNode.IdentifierExpr(1, 8, "id"), lit(1, 12, "1", Kind.NUMBER));
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, "OR",
+                left, lit(1, 20, "false", Kind.BOOLEAN));
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond);
+        PlanNode plan = generator.generate(stmt);
+
+        assertInstanceOf(PlanNode.ProjectPlan.class, plan);
+        PlanNode.FilterPlan filter = (PlanNode.FilterPlan) ((PlanNode.ProjectPlan) plan).getChild();
+        ASTNode optimized = filter.getCondition();
+        assertInstanceOf(ASTNode.BinaryExpr.class, optimized);
+        assertEquals(">", ((ASTNode.BinaryExpr) optimized).getOp());
+    }
+
+    @Test
+    void optimize_andWithFalse_simplifiesToFalse() {
+        // WHERE (id > 1) AND FALSE → FALSE (恒假)
+        ASTNode.BinaryExpr left = new ASTNode.BinaryExpr(1, 9, ">",
+                new ASTNode.IdentifierExpr(1, 8, "id"), lit(1, 12, "1", Kind.NUMBER));
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, "AND",
+                left, lit(1, 20, "false", Kind.BOOLEAN));
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond);
+        PlanNode plan = generator.generate(stmt);
+
+        assertInstanceOf(PlanNode.ProjectPlan.class, plan);
+        PlanNode.FilterPlan filter = (PlanNode.FilterPlan) ((PlanNode.ProjectPlan) plan).getChild();
+        ASTNode optimized = filter.getCondition();
+        assertInstanceOf(LiteralExpr.class, optimized);
+        assertEquals("false", ((LiteralExpr) optimized).getValue());
+    }
+
+    @Test
+    void optimize_orWithTrue_simplifiesToTrue() {
+        // WHERE (id > 1) OR TRUE → TRUE (恒真，跳过 Filter)
+        ASTNode.BinaryExpr left = new ASTNode.BinaryExpr(1, 9, ">",
+                new ASTNode.IdentifierExpr(1, 8, "id"), lit(1, 12, "1", Kind.NUMBER));
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, "OR",
+                left, lit(1, 20, "true", Kind.BOOLEAN));
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond);
+        PlanNode plan = generator.generate(stmt);
+
+        // 恒真跳过 Filter，应该是 Project → SeqScan
+        assertInstanceOf(PlanNode.ProjectPlan.class, plan);
+        assertInstanceOf(PlanNode.SeqScanPlan.class, ((PlanNode.ProjectPlan) plan).getChild());
+    }
+
+    @Test
+    void toJson_andOrCondition() {
+        // WHERE (id > 1) AND (age < 20)
+        ASTNode.BinaryExpr left = new ASTNode.BinaryExpr(1, 9, ">",
+                new ASTNode.IdentifierExpr(1, 8, "id"), lit(1, 12, "1", Kind.NUMBER));
+        ASTNode.BinaryExpr right = new ASTNode.BinaryExpr(1, 19, "<",
+                new ASTNode.IdentifierExpr(1, 18, "age"), lit(1, 22, "20", Kind.NUMBER));
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, "AND", left, right);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond);
+        PlanNode plan = generator.generate(stmt);
+
+        String json = generator.toJson(plan);
+        assertTrue(json.contains("\"op\":\"AND\""));
+        assertTrue(json.contains("\"op\":\">\""));
+        assertTrue(json.contains("\"op\":\"<\""));
+    }
+
     // ========== 辅助方法 ==========
 
     private ASTNode.LiteralExpr lit(int line, int col, String value, Kind kind) {

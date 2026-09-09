@@ -353,4 +353,43 @@ public abstract class ASTNode {
             return "CreateTableStmt{table=" + tableName + ", columns=" + columns + "}";
         }
     }
+
+    /**
+     * SHOW TABLES 语句节点，对应语法：SHOW TABLES
+     * 列出当前数据库中的所有表。
+     */
+    public static class ShowTablesStmt extends ASTNode {
+
+        public ShowTablesStmt(int line, int col) {
+            super(line, col);
+        }
+
+        @Override
+        public String toString() {
+            return "ShowTablesStmt{}";
+        }
+    }
+
+    /**
+     * DROP TABLE 语句节点，对应语法：DROP TABLE tableName
+     * 删除指定表及其数据。
+     */
+    public static class DropTableStmt extends ASTNode {
+
+        private final String tableName;
+
+        public DropTableStmt(int line, int col, String tableName) {
+            super(line, col);
+            this.tableName = tableName;
+        }
+
+        public String getTableName() {
+            return tableName;
+        }
+
+        @Override
+        public String toString() {
+            return "DropTableStmt{table=" + tableName + "}";
+        }
+    }
 }

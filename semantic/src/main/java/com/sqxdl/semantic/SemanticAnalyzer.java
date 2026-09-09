@@ -44,6 +44,10 @@ public class SemanticAnalyzer {
             analyzeDeleteStmt(stmt);
         } else if (ast instanceof ASTNode.CreateTableStmt stmt) {
             analyzeCreateTableStmt(stmt);
+        } else if (ast instanceof ASTNode.ShowTablesStmt stmt) {
+            analyzeShowTablesStmt(stmt);
+        } else if (ast instanceof ASTNode.DropTableStmt stmt) {
+            analyzeDropTableStmt(stmt);
         } else {
             throw error("不支持的语句类型: " + ast.getClass().getSimpleName(), ast);
         }
@@ -168,6 +172,20 @@ public class SemanticAnalyzer {
         }
     }
 
+    // ========== SHOW TABLES ==========
+
+    private void analyzeShowTablesStmt(ASTNode.ShowTablesStmt stmt) {
+        // SHOW TABLES 无需额外检查，直接通过
+    }
+
+    // ========== DROP TABLE ==========
+
+    private void analyzeDropTableStmt(ASTNode.DropTableStmt stmt) {
+        if (!catalog.tableExists(stmt.getTableName())) {
+            throw error("表 " + stmt.getTableName() + " 不存在", stmt);
+        }
+    }
+
     // ========== 条件表达式分析（递归） ==========
 
     private void analyzeCondition(ASTNode cond, String tableName) {
@@ -210,10 +228,25 @@ public class SemanticAnalyzer {
     }
 
     private CatalogImpl.DataType analyzeBinaryExpr(ASTNode.BinaryExpr expr, String tableName) {
+        String op = expr.getOp();
+
+        // 逻辑运算符 AND/OR：两侧必须都是 BOOLEAN，结果也是 BOOLEAN
+        if (isLogicalOp(op)) {
+            CatalogImpl.DataType leftType = analyzeExpr(expr.getLeft(), tableName);
+            CatalogImpl.DataType rightType = analyzeExpr(expr.getRight(), tableName);
+            // 比较运算的结果是 BOOLEAN，可以直接用 AND/OR 连接
+            // BOOLEAN 字面量（true/false）也可以
+            if (leftType != CatalogImpl.DataType.BOOLEAN) {
+                throw error("逻辑运算符 " + op + " 左侧必须是布尔表达式，实际为 " + leftType, expr);
+            }
+            if (rightType != CatalogImpl.DataType.BOOLEAN) {
+                throw error("逻辑运算符 " + op + " 右侧必须是布尔表达式，实际为 " + rightType, expr);
+            }
+            return CatalogImpl.DataType.BOOLEAN;
+        }
+
         CatalogImpl.DataType leftType = analyzeExpr(expr.getLeft(), tableName);
         CatalogImpl.DataType rightType = analyzeExpr(expr.getRight(), tableName);
-
-        String op = expr.getOp();
 
         // 逻辑运算：操作数递归分析即可，结果视为布尔（类型系统暂不要求操作数为 BOOLEAN）
         if (isLogicalOp(op)) {
@@ -223,7 +256,8 @@ public class SemanticAnalyzer {
                 throw error("比较运算符 " + op + " 两侧类型不兼容: "
                         + leftType + " vs " + rightType, expr);
             }
-            return leftType;
+            // 比较运算的结果是 BOOLEAN
+            return CatalogImpl.DataType.BOOLEAN;
         } else if (isArithmeticOp(op)) {
             if (leftType != CatalogImpl.DataType.INT || rightType != CatalogImpl.DataType.INT) {
                 throw error("算术运算符 " + op + " 两侧都必须是整数类型", expr);
@@ -243,9 +277,11 @@ public class SemanticAnalyzer {
     }
 
     private CatalogImpl.DataType literalType(ASTNode.LiteralExpr lit) {
-        return lit.getKind() == ASTNode.LiteralExpr.Kind.NUMBER
-                ? CatalogImpl.DataType.INT
-                : CatalogImpl.DataType.VARCHAR;
+        return switch (lit.getKind()) {
+            case NUMBER -> CatalogImpl.DataType.INT;
+            case STRING -> CatalogImpl.DataType.VARCHAR;
+            case BOOLEAN -> CatalogImpl.DataType.BOOLEAN;
+        };
     }
 
     private boolean typeCompatible(CatalogImpl.DataType a, CatalogImpl.DataType b) {

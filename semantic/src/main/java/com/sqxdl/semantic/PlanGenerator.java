@@ -67,6 +67,12 @@ public class PlanGenerator {
             }
             return new PlanNode.CreateTablePlan(stmt.getTableName(), columnNames);
         }
+        if (ast instanceof ASTNode.ShowTablesStmt stmt) {
+            return new PlanNode.ShowTablesPlan();
+        }
+        if (ast instanceof ASTNode.DropTableStmt stmt) {
+            return new PlanNode.DropTablePlan(stmt.getTableName());
+        }
         throw new IllegalArgumentException("不支持的语句类型: " + ast.getClass().getSimpleName());
     }
 
@@ -408,6 +414,11 @@ public class PlanGenerator {
             writeJsonString(sb, p.getTableName());
             sb.append(",\"columns\":");
             writeStringList(sb, p.getColumns());
+        } else if (plan instanceof PlanNode.ShowTablesPlan) {
+            sb.append("\"op\":\"showTables\"");
+        } else if (plan instanceof PlanNode.DropTablePlan p) {
+            sb.append("\"op\":\"dropTable\",\"table\":");
+            writeJsonString(sb, p.getTableName());
         } else {
             throw new IllegalArgumentException("无法序列化的计划节点类型: " + plan.getClass().getSimpleName());
         }

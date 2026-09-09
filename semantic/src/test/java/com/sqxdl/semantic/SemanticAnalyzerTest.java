@@ -381,4 +381,98 @@ class SemanticAnalyzerTest {
         SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
         assertTrue(ex.getMessage().contains("整数类型"));
     }
+
+    // ========== AND/OR 逻辑运算符类型检查 ==========
+
+    @Test
+    void select_andBothComparison_succeeds() {
+        // WHERE (id > 1) AND (age < 20)
+        ASTNode.BinaryExpr left = new ASTNode.BinaryExpr(1, 9, ">",
+                new ASTNode.IdentifierExpr(1, 8, "id"), new ASTNode.LiteralExpr(1, 12, "1", ASTNode.LiteralExpr.Kind.NUMBER));
+        ASTNode.BinaryExpr right = new ASTNode.BinaryExpr(1, 19, "<",
+                new ASTNode.IdentifierExpr(1, 18, "age"), new ASTNode.LiteralExpr(1, 22, "20", ASTNode.LiteralExpr.Kind.NUMBER));
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, "AND", left, right);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond);
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void select_orBothComparison_succeeds() {
+        // WHERE (id = 1) OR (id = 2)
+        ASTNode.BinaryExpr left = new ASTNode.BinaryExpr(1, 9, "=",
+                new ASTNode.IdentifierExpr(1, 8, "id"), new ASTNode.LiteralExpr(1, 12, "1", ASTNode.LiteralExpr.Kind.NUMBER));
+        ASTNode.BinaryExpr right = new ASTNode.BinaryExpr(1, 19, "=",
+                new ASTNode.IdentifierExpr(1, 18, "id"), new ASTNode.LiteralExpr(1, 23, "2", ASTNode.LiteralExpr.Kind.NUMBER));
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, "OR", left, right);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond);
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void select_andLeftNotBoolean_throwsException() {
+        // WHERE (id + 1) AND (age > 18) — 左侧是算术表达式，不是布尔
+        ASTNode.BinaryExpr left = new ASTNode.BinaryExpr(1, 9, "+",
+                new ASTNode.IdentifierExpr(1, 8, "id"), new ASTNode.LiteralExpr(1, 12, "1", ASTNode.LiteralExpr.Kind.NUMBER));
+        ASTNode.BinaryExpr right = new ASTNode.BinaryExpr(1, 19, ">",
+                new ASTNode.IdentifierExpr(1, 18, "age"), new ASTNode.LiteralExpr(1, 22, "18", ASTNode.LiteralExpr.Kind.NUMBER));
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, "AND", left, right);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond);
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("左侧必须是布尔表达式"));
+    }
+
+    @Test
+    void select_andRightNotBoolean_throwsException() {
+        // WHERE (id > 1) AND (name + 'x') — 右侧是字符串算术
+        ASTNode.BinaryExpr left = new ASTNode.BinaryExpr(1, 9, ">",
+                new ASTNode.IdentifierExpr(1, 8, "id"), new ASTNode.LiteralExpr(1, 12, "1", ASTNode.LiteralExpr.Kind.NUMBER));
+        ASTNode.BinaryExpr right = new ASTNode.BinaryExpr(1, 19, "+",
+                new ASTNode.IdentifierExpr(1, 18, "name"), new ASTNode.LiteralExpr(1, 22, "x", ASTNode.LiteralExpr.Kind.STRING));
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, "AND", left, right);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond);
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        // 右侧的 name+x 会先报算术运算错误（字符串不能做算术）
+        assertTrue(ex.getMessage().contains("整数类型"));
+    }
+
+    @Test
+    void select_nestedAndOr_succeeds() {
+        // WHERE (id > 1 AND age < 20) OR (id = 0)
+        ASTNode.BinaryExpr leftAnd = new ASTNode.BinaryExpr(1, 9, "AND",
+                new ASTNode.BinaryExpr(1, 8, ">", new ASTNode.IdentifierExpr(1, 7, "id"), new ASTNode.LiteralExpr(1, 11, "1", ASTNode.LiteralExpr.Kind.NUMBER)),
+                new ASTNode.BinaryExpr(1, 18, "<", new ASTNode.IdentifierExpr(1, 17, "age"), new ASTNode.LiteralExpr(1, 21, "20", ASTNode.LiteralExpr.Kind.NUMBER)));
+        ASTNode.BinaryExpr right = new ASTNode.BinaryExpr(1, 28, "=",
+                new ASTNode.IdentifierExpr(1, 27, "id"), new ASTNode.LiteralExpr(1, 31, "0", ASTNode.LiteralExpr.Kind.NUMBER));
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 24, "OR", leftAnd, right);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond);
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    // ========== SHOW TABLES ==========
+
+    @Test
+    void showTables_succeeds() {
+        ASTNode.ShowTablesStmt stmt = new ASTNode.ShowTablesStmt(1, 1);
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    // ========== DROP TABLE ==========
+
+    @Test
+    void dropTable_existing_succeeds() {
+        ASTNode.DropTableStmt stmt = new ASTNode.DropTableStmt(1, 1, "student");
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void dropTable_notExisting_throwsException() {
+        ASTNode.DropTableStmt stmt = new ASTNode.DropTableStmt(1, 1, "nonexistent");
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("不存在"));
+    }
 }
