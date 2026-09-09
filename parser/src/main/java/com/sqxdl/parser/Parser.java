@@ -29,9 +29,17 @@ public class Parser {
     /** 向前看缓存：当前待处理的 Token，初始为第一个 Token */
     private Token current;
 
+    /** 上一次 parseAll() 收集到的语法错误（错误恢复时填充，单条 parse() 不记录） */
+    private final List<SqxdlException> errors = new ArrayList<>();
+
     public Parser(Lexer lexer) {
         this.lexer = lexer;
         this.current = lexer.nextToken();
+    }
+
+    /** 返回最后一次 parseAll() 解析过程中的语法错误列表（按出现顺序） */
+    public List<SqxdlException> getErrors() {
+        return errors;
     }
 
     /**
@@ -62,8 +70,7 @@ public class Parser {
                 }
             }
         }
-        throw new SqxdlException(t.getLine(), t.getCol(),
-                "语法错误：无法识别的语句，以 '" + t.getLexeme() + "' 开头");
+        throw syntaxError(t, "SELECT | INSERT | UPDATE | DELETE | CREATE");
     }
 
     /**
@@ -77,8 +84,7 @@ public class Parser {
         Token t = peek();
         boolean nextStatement = t.getType() == Token.Type.KEYWORD;
         if (t.getType() != Token.Type.EOF && !nextStatement) {
-            throw new SqxdlException(t.getLine(), t.getCol(),
-                    "语法错误：期望分号或下一条语句，但遇到 '" + t.getLexeme() + "'");
+            throw syntaxError(t, "';' | EOF | SELECT | INSERT | UPDATE | DELETE | CREATE");
         }
     }
 
@@ -86,9 +92,13 @@ public class Parser {
      * 解析多条 SQL 语句（分号分隔），直到输入结束。
      * 例："SELECT 1; SELECT 2" → 两条语句；空输入 → 空列表。
      *
-     * @return 全部语句的 AST 节点列表
+     * <p>错误恢复：某条语句解析出错时，把异常记入 {@link #getErrors()}，
+     * 然后丢弃到下一个 ';'（或 EOF）继续解析下一条，不会中断整体处理。
+     *
+     * @return 解析成功的语句 AST 节点列表；错误详情见 {@link #getErrors()}
      */
     public List<ASTNode> parseAll() {
+        errors.clear();
         List<ASTNode> stmts = new ArrayList<>();
         while (peek().getType() != Token.Type.EOF) {
             // 跳过前导/连续分号（空语句）
@@ -96,9 +106,25 @@ public class Parser {
                 advance();
                 continue;
             }
-            stmts.add(parse());
+            try {
+                stmts.add(parse());
+            } catch (SqxdlException e) {
+                errors.add(e);
+                skipToStatementBoundary();
+            }
         }
         return stmts;
+    }
+
+    /** 跳到下一条语句边界：丢弃直到（并包括）下一个 ';'，若没有分号则到 EOF */
+    private void skipToStatementBoundary() {
+        while (peek().getType() != Token.Type.EOF
+                && !(peek().getType() == Token.Type.DELIMITER && ";".equals(peek().getLexeme()))) {
+            advance();
+        }
+        if (peek().getType() == Token.Type.DELIMITER && ";".equals(peek().getLexeme())) {
+            advance();
+        }
     }
 
     /**
@@ -229,7 +255,7 @@ public class Parser {
     }
 
     /**
-     * 解析 CREATE TABLE 语句：CREATE TABLE tableName (列名清单)
+     * 解析 CREATE TABLE 语句：CREATE TABLE tableName '(' column_def { ',' column_def } ')'
      *
      * @return CreateTableStmt 节点
      */
@@ -238,16 +264,33 @@ public class Parser {
         expectKeyword("TABLE");
         Token table = expect(Token.Type.IDENTIFIER);
         expectDelimiter("(");
-        List<String> columns = new ArrayList<>();
-        columns.add(expect(Token.Type.IDENTIFIER).getLexeme());
+        List<ASTNode.CreateTableStmt.ColumnDef> columns = new ArrayList<>();
+        columns.add(parseColumnDef());
         while (peek().getType() == Token.Type.DELIMITER && ",".equals(peek().getLexeme())) {
             advance();
-            columns.add(expect(Token.Type.IDENTIFIER).getLexeme());
+            columns.add(parseColumnDef());
         }
         expectDelimiter(")");
         finishStatement();
         return new ASTNode.CreateTableStmt(start.getLine(), start.getCol(),
                 table.getLexeme(), columns);
+    }
+
+    /** 解析列定义：IDENTIFIER type（type -> INT | VARCHAR），类型统一存大写 */
+    private ASTNode.CreateTableStmt.ColumnDef parseColumnDef() {
+        Token name = expect(Token.Type.IDENTIFIER);
+        Token type = expectType();
+        return new ASTNode.CreateTableStmt.ColumnDef(name.getLexeme(), type.getLexeme().toUpperCase());
+    }
+
+    /** 断言当前 Token 为列类型关键字 INT 或 VARCHAR，符合则消费并返回 */
+    private Token expectType() {
+        if (current.getType() == Token.Type.KEYWORD
+                && ("INT".equalsIgnoreCase(current.getLexeme())
+                || "VARCHAR".equalsIgnoreCase(current.getLexeme()))) {
+            return advance();
+        }
+        throw syntaxError(current, "INT | VARCHAR");
     }
 
     /**
@@ -282,13 +325,27 @@ public class Parser {
     }
 
     private ASTNode parseAnd() {
-        ASTNode left = parseComparison();
+        ASTNode left = parseNot();
         while (isAnd()) {
             Token op = advance();
-            ASTNode right = parseComparison();
+            ASTNode right = parseNot();
             left = new ASTNode.BinaryExpr(op.getLine(), op.getCol(), normalize(op), left, right);
         }
         return left;
+    }
+
+    /**
+     * NOT 一元运算层：not_expr -> NOT not_expr | comparison。
+     * 按文法，NOT 的优先级低于比较运算、高于 AND/OR；
+     * 例如 "NOT age &gt; 18" 解析为 NOT(age &gt; 18)，"NOT a = 1 AND b = 2" 解析为 (NOT a=1) AND (b=2)。
+     */
+    private ASTNode parseNot() {
+        if (peek().getType() == Token.Type.KEYWORD && "NOT".equalsIgnoreCase(peek().getLexeme())) {
+            Token op = advance();
+            ASTNode operand = parseNot();
+            return new ASTNode.UnaryExpr(op.getLine(), op.getCol(), "NOT", operand);
+        }
+        return parseComparison();
     }
 
     /** 是否遇到逻辑或：运算符 || 或关键字 OR（不区分大小写） */
@@ -344,23 +401,28 @@ public class Parser {
     }
 
     /**
-     * 原子操作数：列名 → ColumnRef；字面量 → LiteralExpr。
+     * 原子操作数：'(' expression ')' → 括号内表达式；标识符 → IdentifierExpr；字面量 → LiteralExpr。
      *
-     * @return 叶子表达式节点
+     * @return 叶子或括号子表达式节点
      */
     private ASTNode parseOperand() {
         Token t = peek();
+        if (t.getType() == Token.Type.DELIMITER && "(".equals(t.getLexeme())) {
+            advance();
+            ASTNode inner = parseExpr();
+            expectDelimiter(")");
+            return inner;
+        }
         if (t.getType() == Token.Type.IDENTIFIER) {
             advance();
-            return new ASTNode.ColumnRef(t.getLine(), t.getCol(), t.getLexeme());
+            return new ASTNode.IdentifierExpr(t.getLine(), t.getCol(), t.getLexeme());
         }
         ASTNode.LiteralExpr lit = literalFromToken(t);
         if (lit != null) {
             advance();
             return lit;
         }
-        throw new SqxdlException(t.getLine(), t.getCol(),
-                "语法错误：期望列名或常量，但遇到 '" + t.getLexeme() + "'");
+        throw syntaxError(t, "IDENTIFIER | CONST | '(' | ')' | NOT");
     }
 
     /**
@@ -393,7 +455,11 @@ public class Parser {
             }
             return nb;
         }
-        return node; // LiteralExpr / ColumnRef 原样返回
+        if (node instanceof ASTNode.UnaryExpr u) {
+            // NOT 一元运算：递归折叠其操作数（如 NOT (x = 1 + 2) 内的 1+2 → 3）
+            return new ASTNode.UnaryExpr(u.getLine(), u.getCol(), u.getOp(), fold(u.getOperand()));
+        }
+        return node; // LiteralExpr / IdentifierExpr 原样返回
     }
 
     private boolean isArithOp(String op) {
@@ -489,6 +555,30 @@ public class Parser {
     }
 
     /**
+     * 构造统一格式的语法错误：第N行第M列: unexpected token 'X'，期望: 终结符列表。
+     * 格式对齐课程要求：必须给出行列号、具体的意外符号与当前状态下期望的终结符。
+     */
+    private SqxdlException syntaxError(Token t, String expected) {
+        // EOF 词素为空，统一显示为 "EOF"，避免 "unexpected token ''"
+        String shown = t.getType() == Token.Type.EOF ? "EOF" : t.getLexeme();
+        return new SqxdlException(t.getLine(), t.getCol(),
+                "第" + t.getLine() + "行第" + t.getCol() + "列: unexpected token '"
+                        + shown + "'，期望: " + expected);
+    }
+
+    /** Token 类型的展示名（用于期望列表） */
+    private static String expectedName(Token.Type type) {
+        return switch (type) {
+            case IDENTIFIER -> "IDENTIFIER";
+            case CONST -> "CONST";
+            case KEYWORD -> "关键字";
+            case OPERATOR -> "运算符";
+            case DELIMITER -> "分隔符";
+            case EOF -> "EOF";
+        };
+    }
+
+    /**
      * 断言当前 Token 的类型，符合则消费并返回；不符合则抛出带行列号的语法异常。
      *
      * @param type 期望的 Token 类型
@@ -497,8 +587,7 @@ public class Parser {
      */
     private Token expect(Token.Type type) {
         if (current.getType() != type) {
-            throw new SqxdlException(current.getLine(), current.getCol(),
-                    "语法错误：期望 " + type + "，但遇到 '" + current.getLexeme() + "'");
+            throw syntaxError(current, expectedName(type));
         }
         return advance();
     }
@@ -513,8 +602,7 @@ public class Parser {
     private Token expectKeyword(String keyword) {
         if (current.getType() != Token.Type.KEYWORD
                 || !current.getLexeme().equalsIgnoreCase(keyword)) {
-            throw new SqxdlException(current.getLine(), current.getCol(),
-                    "语法错误：期望关键字 " + keyword + "，但遇到 '" + current.getLexeme() + "'");
+            throw syntaxError(current, keyword);
         }
         return advance();
     }
@@ -527,8 +615,7 @@ public class Parser {
      */
     private Token expectDelimiter(String delim) {
         if (current.getType() != Token.Type.DELIMITER || !delim.equals(current.getLexeme())) {
-            throw new SqxdlException(current.getLine(), current.getCol(),
-                    "语法错误：期望 '" + delim + "'，但遇到 '" + current.getLexeme() + "'");
+            throw syntaxError(current, "'" + delim + "'");
         }
         return advance();
     }
@@ -541,8 +628,7 @@ public class Parser {
      */
     private Token expectOperator(String op) {
         if (current.getType() != Token.Type.OPERATOR || !op.equals(current.getLexeme())) {
-            throw new SqxdlException(current.getLine(), current.getCol(),
-                    "语法错误：期望运算符 '" + op + "'，但遇到 '" + current.getLexeme() + "'");
+            throw syntaxError(current, "'" + op + "'");
         }
         return advance();
     }
@@ -557,8 +643,7 @@ public class Parser {
         Token t = peek();
         ASTNode.LiteralExpr lit = literalFromToken(t);
         if (lit == null) {
-            throw new SqxdlException(t.getLine(), t.getCol(),
-                    "语法错误：期望字面量，但遇到 '" + t.getLexeme() + "'");
+            throw syntaxError(t, "CONST | TRUE | FALSE");
         }
         advance();
         return lit;

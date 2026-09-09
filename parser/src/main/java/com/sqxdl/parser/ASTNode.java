@@ -13,6 +13,9 @@ public abstract class ASTNode {
     private final int line;
     private final int col;
 
+    /** 预留类型字段：语法阶段暂为 null，由语义分析阶段补充（如 INT / VARCHAR / BOOLEAN） */
+    private String type;
+
     protected ASTNode(int line, int col) {
         this.line = line;
         this.col = col;
@@ -24,6 +27,14 @@ public abstract class ASTNode {
 
     public int getCol() {
         return col;
+    }
+
+    public String getType() {
+        return type;
+    }
+
+    public void setType(String type) {
+        this.type = type;
     }
 
     /**
@@ -102,6 +113,35 @@ public abstract class ASTNode {
     }
 
     /**
+     * 一元运算表达式节点，如 NOT 条件。
+     * op 为运算符文本（如 "NOT"），operand 为操作数表达式。
+     */
+    public static class UnaryExpr extends ASTNode {
+
+        private final String op;
+        private final ASTNode operand;
+
+        public UnaryExpr(int line, int col, String op, ASTNode operand) {
+            super(line, col);
+            this.op = op;
+            this.operand = operand;
+        }
+
+        public String getOp() {
+            return op;
+        }
+
+        public ASTNode getOperand() {
+            return operand;
+        }
+
+        @Override
+        public String toString() {
+            return "(" + op + " " + operand + ")";
+        }
+    }
+
+    /**
      * 字面量表达式节点，叶子节点，如 123、'abc'。
      * value 统一以字符串形式保存原文本；kind 记录词法类型，
      * 供语义分析阶段区分数字与字符串（如 WHERE id = 1 与 id = '1'）。
@@ -135,14 +175,14 @@ public abstract class ASTNode {
     }
 
     /**
-     * 列引用表达式节点，如 WHERE id &gt; 1 中的 id。
-     * 与 LiteralExpr 一起构成条件表达式的两种叶子。
+     * 标识符表达式节点（叶子），如 WHERE id &gt; 1 中的 id。
+     * 与 LiteralExpr 一起构成条件表达式的两种叶子；语义分析阶段可据此区分"列"与"常量"。
      */
-    public static class ColumnRef extends ASTNode {
+    public static class IdentifierExpr extends ASTNode {
 
         private final String name;
 
-        public ColumnRef(int line, int col, String name) {
+        public IdentifierExpr(int line, int col, String name) {
             super(line, col);
             this.name = name;
         }
@@ -262,14 +302,39 @@ public abstract class ASTNode {
     }
 
     /**
-     * CREATE TABLE 语句节点，对应语法：CREATE TABLE tableName (colList)
+     * CREATE TABLE 语句节点，对应语法：CREATE TABLE tableName '(' column_def { ',' column_def } ')'
      */
     public static class CreateTableStmt extends ASTNode {
 
-        private final String tableName;
-        private final List<String> columns;
+        /** 列定义：列名 + 类型（INT | VARCHAR） */
+        public static class ColumnDef {
+            private final String name;
+            private final String type;
 
-        public CreateTableStmt(int line, int col, String tableName, List<String> columns) {
+            public ColumnDef(String name, String type) {
+                this.name = name;
+                this.type = type;
+            }
+
+            public String getName() {
+                return name;
+            }
+
+            public String getType() {
+                return type;
+            }
+
+            @Override
+            public String toString() {
+                return name + " " + type;
+            }
+        }
+
+        private final String tableName;
+        /** 列定义清单：按建表书写顺序，含列名与类型 */
+        private final List<ColumnDef> columns;
+
+        public CreateTableStmt(int line, int col, String tableName, List<ColumnDef> columns) {
             super(line, col);
             this.tableName = tableName;
             this.columns = columns;
@@ -279,7 +344,7 @@ public abstract class ASTNode {
             return tableName;
         }
 
-        public List<String> getColumns() {
+        public List<ColumnDef> getColumns() {
             return columns;
         }
 

@@ -20,7 +20,8 @@ public class Lexer {
     private static final Set<String> KEYWORDS = Set.of(
             "SELECT", "FROM", "WHERE", "CREATE", "TABLE",
             "INSERT", "INTO", "VALUES", "DELETE", "UPDATE", "SET",
-            "AND", "OR", "TRUE", "FALSE");
+            "AND", "OR", "NOT", "TRUE", "FALSE",
+            "INT", "VARCHAR");
 
     /** 双字符运算符，需先于单字符判断 */
     private static final Set<String> TWO_CHAR_OPERATORS = Set.of("<=", ">=", "!=", "==", "&&", "||");
