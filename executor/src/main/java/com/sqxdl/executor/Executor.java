@@ -1,32 +1,22 @@
 package com.sqxdl.executor;
 
-import com.sqxdl.executor.storage.StorageClient;
 import com.sqxdl.executor.storage.StorageResult;
-import com.sqxdl.semantic.PlanNode;
 
 import java.util.List;
 
 /**
  * 执行器（D 组）。
- * 职责：把语义分析生成的计划交给存储核心（storage_core.exe）执行，
- *       并按结果类型（数据集/行数/错误）格式化输出。
- * 存储交互细节由 {@link StorageClient} 封装，本类不感知进程与 JSON 协议。
+ * 职责：按结果类型（数据集/行数/错误）格式化输出，供 CLI 展示执行结果。
+ * 只做展示，不感知存储协议与执行细节（执行统一由 {@link SqlEngine} 门面完成）。
  */
 public class Executor {
 
-    private final StorageClient storageClient = new StorageClient();
-
     /**
-     * 执行给定的计划并输出结果；任何失败都以错误文本呈现，不抛出异常。
+     * 渲染执行结果；任何失败都以错误文本呈现，不抛出异常。
      *
-     * @param plan 计划树根节点
+     * @param result 引擎返回的统一结果
      */
-    public void execute(PlanNode plan) {
-        print(storageClient.execute(plan));
-    }
-
-    /** 按结果类型分发输出 */
-    private void print(StorageResult result) {
+    public void render(StorageResult result) {
         switch (result.getType()) {
             case RESULTSET -> printResultSet(result);
             case ROWCOUNT -> System.out.println("执行成功，受影响行数: " + result.getRowsAffected());

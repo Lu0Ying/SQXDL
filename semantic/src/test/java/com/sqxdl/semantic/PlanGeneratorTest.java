@@ -46,7 +46,7 @@ class PlanGeneratorTest {
 
     @Test
     void select_withWhere_success() {
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "age");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "age");
         ASTNode.LiteralExpr lit = lit(1, 15, "18", Kind.NUMBER);
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 12, ">", col, lit);
 
@@ -122,7 +122,7 @@ class PlanGeneratorTest {
         // WHERE 2 + 3 > age → WHERE 5 > age（折叠算术，保留列引用）
         ASTNode.BinaryExpr add = new ASTNode.BinaryExpr(
                 1, 9, "+", lit(1, 8, "2", Kind.NUMBER), lit(1, 12, "3", Kind.NUMBER));
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 16, "age");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 16, "age");
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, ">", add, col);
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
@@ -184,7 +184,7 @@ class PlanGeneratorTest {
     @Test
     void simplify_andTrue_removesTrue() {
         // WHERE age > 18 AND TRUE → WHERE age > 18
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "age");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "age");
         ASTNode.BinaryExpr left = new ASTNode.BinaryExpr(1, 12, ">", col, lit(1, 16, "18", Kind.NUMBER));
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 20, "AND", left, lit(1, 24, "true", Kind.BOOLEAN));
 
@@ -203,7 +203,7 @@ class PlanGeneratorTest {
     @Test
     void simplify_andFalse_becomesFalse() {
         // WHERE age > 18 AND FALSE → WHERE FALSE
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "age");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "age");
         ASTNode.BinaryExpr left = new ASTNode.BinaryExpr(1, 12, ">", col, lit(1, 16, "18", Kind.NUMBER));
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 20, "AND", left, lit(1, 24, "false", Kind.BOOLEAN));
 
@@ -221,7 +221,7 @@ class PlanGeneratorTest {
     @Test
     void simplify_orTrue_becomesTrue_skipsFilter() {
         // WHERE age > 18 OR TRUE → WHERE TRUE → 无 Filter
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "age");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "age");
         ASTNode.BinaryExpr left = new ASTNode.BinaryExpr(1, 12, ">", col, lit(1, 16, "18", Kind.NUMBER));
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 20, "OR", left, lit(1, 24, "true", Kind.BOOLEAN));
 
@@ -236,7 +236,7 @@ class PlanGeneratorTest {
     @Test
     void simplify_orFalse_removesFalse() {
         // WHERE age > 18 OR FALSE → WHERE age > 18
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "age");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "age");
         ASTNode.BinaryExpr left = new ASTNode.BinaryExpr(1, 12, ">", col, lit(1, 16, "18", Kind.NUMBER));
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 20, "OR", left, lit(1, 24, "false", Kind.BOOLEAN));
 
@@ -256,7 +256,7 @@ class PlanGeneratorTest {
     @Test
     void simplify_addZero_removesZero() {
         // WHERE age + 0 > 18 → WHERE age > 18
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "age");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "age");
         ASTNode.BinaryExpr add = new ASTNode.BinaryExpr(1, 12, "+", col, lit(1, 18, "0", Kind.NUMBER));
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 20, ">", add, lit(1, 24, "18", Kind.NUMBER));
 
@@ -266,15 +266,15 @@ class PlanGeneratorTest {
 
         assertTrue(getChild(plan) instanceof PlanNode.FilterPlan);
         ASTNode.BinaryExpr filterCond = (ASTNode.BinaryExpr) ((PlanNode.FilterPlan) getChild(plan)).getCondition();
-        // 左操作数应该直接是 ColumnRef（age+0 被化简为 age）
-        assertTrue(filterCond.getLeft() instanceof ASTNode.ColumnRef);
-        assertEquals("age", ((ASTNode.ColumnRef) filterCond.getLeft()).getName());
+        // 左操作数应该直接是 IdentifierExpr（age+0 被化简为 age）
+        assertTrue(filterCond.getLeft() instanceof ASTNode.IdentifierExpr);
+        assertEquals("age", ((ASTNode.IdentifierExpr) filterCond.getLeft()).getName());
     }
 
     @Test
     void simplify_mulOne_removesOne() {
         // WHERE age * 1 > 18 → WHERE age > 18
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "age");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "age");
         ASTNode.BinaryExpr mul = new ASTNode.BinaryExpr(1, 12, "*", col, lit(1, 18, "1", Kind.NUMBER));
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 20, ">", mul, lit(1, 24, "18", Kind.NUMBER));
 
@@ -284,13 +284,13 @@ class PlanGeneratorTest {
 
         assertTrue(getChild(plan) instanceof PlanNode.FilterPlan);
         ASTNode.BinaryExpr filterCond = (ASTNode.BinaryExpr) ((PlanNode.FilterPlan) getChild(plan)).getCondition();
-        assertTrue(filterCond.getLeft() instanceof ASTNode.ColumnRef);
+        assertTrue(filterCond.getLeft() instanceof ASTNode.IdentifierExpr);
     }
 
     @Test
     void simplify_subZero_removesZero() {
         // WHERE age - 0 > 18 → WHERE age > 18
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "age");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "age");
         ASTNode.BinaryExpr sub = new ASTNode.BinaryExpr(1, 12, "-", col, lit(1, 18, "0", Kind.NUMBER));
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 20, ">", sub, lit(1, 24, "18", Kind.NUMBER));
 
@@ -299,13 +299,13 @@ class PlanGeneratorTest {
         PlanNode plan = generator.generate(stmt);
 
         ASTNode.BinaryExpr filterCond = (ASTNode.BinaryExpr) ((PlanNode.FilterPlan) getChild(plan)).getCondition();
-        assertTrue(filterCond.getLeft() instanceof ASTNode.ColumnRef);
+        assertTrue(filterCond.getLeft() instanceof ASTNode.IdentifierExpr);
     }
 
     @Test
     void simplify_divOne_removesOne() {
         // WHERE age / 1 > 18 → WHERE age > 18
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "age");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "age");
         ASTNode.BinaryExpr div = new ASTNode.BinaryExpr(1, 12, "/", col, lit(1, 18, "1", Kind.NUMBER));
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 20, ">", div, lit(1, 24, "18", Kind.NUMBER));
 
@@ -314,7 +314,7 @@ class PlanGeneratorTest {
         PlanNode plan = generator.generate(stmt);
 
         ASTNode.BinaryExpr filterCond = (ASTNode.BinaryExpr) ((PlanNode.FilterPlan) getChild(plan)).getCondition();
-        assertTrue(filterCond.getLeft() instanceof ASTNode.ColumnRef);
+        assertTrue(filterCond.getLeft() instanceof ASTNode.IdentifierExpr);
     }
 
     // ========== 嵌套优化 ==========
@@ -340,7 +340,7 @@ class PlanGeneratorTest {
         // WHERE (1+2) > age → WHERE 3 > age（左折叠，右保留）
         ASTNode.BinaryExpr left = new ASTNode.BinaryExpr(1, 9, "+",
                 lit(1, 8, "1", Kind.NUMBER), lit(1, 12, "2", Kind.NUMBER));
-        ASTNode.ColumnRef right = new ASTNode.ColumnRef(1, 16, "age");
+        ASTNode.IdentifierExpr right = new ASTNode.IdentifierExpr(1, 16, "age");
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, ">", left, right);
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
@@ -351,7 +351,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr filterCond = (ASTNode.BinaryExpr) ((PlanNode.FilterPlan) getChild(plan)).getCondition();
         assertTrue(filterCond.getLeft() instanceof ASTNode.LiteralExpr);
         assertEquals("3", ((ASTNode.LiteralExpr) filterCond.getLeft()).getValue());
-        assertTrue(filterCond.getRight() instanceof ASTNode.ColumnRef);
+        assertTrue(filterCond.getRight() instanceof ASTNode.IdentifierExpr);
     }
 
     // ========== UPDATE/DELETE 条件优化 ==========
@@ -411,7 +411,9 @@ class PlanGeneratorTest {
 
     @Test
     void createTable_success() {
-        ASTNode.CreateTableStmt stmt = new ASTNode.CreateTableStmt(1, 1, "course", Arrays.asList("cid", "cname"));
+        ASTNode.CreateTableStmt stmt = new ASTNode.CreateTableStmt(1, 1, "course", Arrays.asList(
+                new ASTNode.CreateTableStmt.ColumnDef("cid", "INT"),
+                new ASTNode.CreateTableStmt.ColumnDef("cname", "VARCHAR")));
 
         PlanNode plan = generator.generate(stmt);
         assertTrue(plan instanceof PlanNode.CreateTablePlan);
@@ -461,7 +463,7 @@ class PlanGeneratorTest {
     @Test
     void select_withAnalyzerAndWhere_success() {
         SemanticAnalyzer analyzer = new SemanticAnalyzer(catalog);
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "age");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "age");
         ASTNode.LiteralExpr lit = lit(1, 15, "18", Kind.NUMBER);
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 12, ">", col, lit);
 
@@ -481,7 +483,7 @@ class PlanGeneratorTest {
 
     @Test
     void formatPlan_selectWithWhere() {
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "age");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "age");
         ASTNode.LiteralExpr lit = lit(1, 15, "18", Kind.NUMBER);
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 12, ">", col, lit);
 
@@ -543,7 +545,7 @@ class PlanGeneratorTest {
         Map<String, ASTNode.LiteralExpr> assignments = new LinkedHashMap<>();
         assignments.put("name", lit(1, 20, "Bob", Kind.STRING));
 
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 30, "age");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 30, "age");
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 32, ">", col, lit(1, 36, "18", Kind.NUMBER));
         ASTNode.UpdateStmt stmt = new ASTNode.UpdateStmt(1, 1, "student", assignments, cond);
 
@@ -584,7 +586,9 @@ class PlanGeneratorTest {
 
     @Test
     void formatPlan_createTable() {
-        ASTNode.CreateTableStmt stmt = new ASTNode.CreateTableStmt(1, 1, "course", Arrays.asList("cid", "cname"));
+        ASTNode.CreateTableStmt stmt = new ASTNode.CreateTableStmt(1, 1, "course", Arrays.asList(
+                new ASTNode.CreateTableStmt.ColumnDef("cid", "INT"),
+                new ASTNode.CreateTableStmt.ColumnDef("cname", "VARCHAR")));
         PlanNode plan = generator.generate(stmt);
 
         String output = PlanNode.formatPlan(plan);
@@ -604,7 +608,7 @@ class PlanGeneratorTest {
 
     @Test
     void toJson_selectWithWhere() {
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "id");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "id");
         ASTNode.LiteralExpr val = lit(1, 15, "1", Kind.NUMBER);
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 12, ">", col, val);
 
@@ -693,7 +697,7 @@ class PlanGeneratorTest {
         Map<String, ASTNode.LiteralExpr> assignments = new LinkedHashMap<>();
         assignments.put("name", lit(1, 20, "Bob", Kind.STRING));
 
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 30, "id");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 30, "id");
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 32, "=", col, lit(1, 36, "1", Kind.NUMBER));
         ASTNode.UpdateStmt stmt = new ASTNode.UpdateStmt(1, 1, "student", assignments, cond);
 
@@ -725,7 +729,7 @@ class PlanGeneratorTest {
 
     @Test
     void toJson_deleteWithCondition() {
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "id");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "id");
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 12, "=", col, lit(1, 15, "1", Kind.NUMBER));
         ASTNode.DeleteStmt stmt = new ASTNode.DeleteStmt(1, 1, "student", cond);
 
@@ -751,7 +755,9 @@ class PlanGeneratorTest {
 
     @Test
     void toJson_createTable() {
-        ASTNode.CreateTableStmt stmt = new ASTNode.CreateTableStmt(1, 1, "course", Arrays.asList("cid", "cname"));
+        ASTNode.CreateTableStmt stmt = new ASTNode.CreateTableStmt(1, 1, "course", Arrays.asList(
+                new ASTNode.CreateTableStmt.ColumnDef("cid", "INT"),
+                new ASTNode.CreateTableStmt.ColumnDef("cname", "VARCHAR")));
         PlanNode plan = generator.generate(stmt);
 
         String json = generator.toJson(plan);
@@ -763,7 +769,7 @@ class PlanGeneratorTest {
 
     @Test
     void toJson_booleanLiteralValue() {
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "id");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "id");
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 12, "=", col, lit(1, 15, "true", Kind.BOOLEAN));
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
@@ -779,7 +785,7 @@ class PlanGeneratorTest {
 
     @Test
     void toJson_stringLiteralValue() {
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "name");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "name");
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 12, "=", col, lit(1, 15, "Alice", Kind.STRING));
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
@@ -796,9 +802,9 @@ class PlanGeneratorTest {
     void toJson_nestedBinaryExpr() {
         // WHERE (id > 1) AND (age < 20)
         ASTNode.BinaryExpr left = new ASTNode.BinaryExpr(1, 9, ">",
-                new ASTNode.ColumnRef(1, 8, "id"), lit(1, 12, "1", Kind.NUMBER));
+                new ASTNode.IdentifierExpr(1, 8, "id"), lit(1, 12, "1", Kind.NUMBER));
         ASTNode.BinaryExpr right = new ASTNode.BinaryExpr(1, 19, "<",
-                new ASTNode.ColumnRef(1, 18, "age"), lit(1, 22, "20", Kind.NUMBER));
+                new ASTNode.IdentifierExpr(1, 18, "age"), lit(1, 22, "20", Kind.NUMBER));
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, "AND", left, right);
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
@@ -846,7 +852,7 @@ class PlanGeneratorTest {
         // SELECT id, name FROM student WHERE id > 1
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(
                 1, 10, ">",
-                new ASTNode.ColumnRef(1, 9, "id"),
+                new ASTNode.IdentifierExpr(1, 9, "id"),
                 lit(1, 13, "1", Kind.NUMBER));
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
                 1, 1, "student", Arrays.asList("id", "name"), cond);
