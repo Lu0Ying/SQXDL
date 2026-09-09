@@ -8,9 +8,10 @@
 #include "column.h"
 #include "table.h"
 
-// 数据库：进程内所有表组成的目录（catalog），
-// 存储核心各操作通过 instance() 访问同一实例；数据驻留内存，
-// 生命周期与服务进程一致（readme 未定义持久化要求）
+// 数据库：进程内所有表组成的目录（catalog），存储核心各操作通过 instance()
+// 访问同一实例。目录以默认存储目录 /data/ 下的 catalog.json 持久化：
+// 首次访问任一接口时从磁盘加载已建表，建表/删表后把目录写回磁盘，
+// 进程重启后表结构仍可从磁盘恢复。
 class Database
 {
 public:
@@ -23,10 +24,12 @@ public:
     Table &get_table(const std::string &name);
     const Table &get_table(const std::string &name) const;
 
-    // 表已存在抛 StorageError(TABLE_ALREADY_EXISTS)
+    // 表已存在抛 StorageError(TABLE_ALREADY_EXISTS)；
+    // 目录写回失败抛 StorageError(INTERNAL_ERROR)
     void create_table(const std::string &name, std::vector<Column> columns);
 
-    // 表不存在抛 StorageError(TABLE_NOT_FOUND)
+    // 表不存在抛 StorageError(TABLE_NOT_FOUND)；
+    // 目录写回失败抛 StorageError(INTERNAL_ERROR)
     void drop_table(const std::string &name);
 
     // 所有表名（按名称排序，供 showTables 使用）
@@ -35,7 +38,15 @@ public:
 private:
     Database() = default;
 
-    std::map<std::string, Table> tables_;
+    // 惰性加载：仅首次访问时把 catalog.json 中的表读入内存；
+    // 目录缺失视为空目录，目录文件损坏抛 StorageError(INTERNAL_ERROR)
+    void ensure_loaded() const;
+
+    // 把当前内存目录整体写回 catalog.json
+    void save_catalog() const;
+
+    mutable bool loaded_ = false;
+    mutable std::map<std::string, Table> tables_;
 };
 
 #endif
