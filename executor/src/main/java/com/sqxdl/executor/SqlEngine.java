@@ -132,8 +132,21 @@ public class SqlEngine {
             return StorageResult.error("SEMANTIC_ERROR", e.getMessage());
         }
 
-        // 阶段三：计划生成 + 执行
-        PlanNode plan = new PlanGenerator(catalog).generate(ast);
+        // 建表元数据在此统一登记（AUTO/LOCAL 共用），保证后续语句的语义校验可见新表；
+        // 数据写入由存储核心（AUTO）或内置模拟层（LOCAL/回退）负责
+        if (ast instanceof ASTNode.CreateTableStmt createStmt) {
+            List<CatalogImpl.ColumnInfo> infos = toColumnInfos(createStmt.getColumns());
+            catalog.createTableWithTypes(createStmt.getTableName(), infos);
+            tables.put(createStmt.getTableName(), new TableData(infos, new ArrayList<>()));
+        }
+
+        // 阶段三：计划生成 + 执行（generate 含表达式优化，任何异常都以 ERROR 返回）
+        PlanNode plan;
+        try {
+            plan = new PlanGenerator(catalog).generate(ast);
+        } catch (RuntimeException e) {
+            return StorageResult.error("PLAN_ERROR", e.getMessage());
+        }
         // LOCAL 模式直接本地模拟（数据保存在 JVM，演示可跨语句看到变化）
         if (mode == Mode.LOCAL) {
             return simulate(ast);
@@ -263,20 +276,19 @@ public class SqlEngine {
         return StorageResult.rowcount(affected);
     }
 
-    /** 模拟 CREATE TABLE：登记元数据与空表，供后续语句使用 */
+    /** 模拟 CREATE TABLE：元数据已在 execute 中统一登记，此处仅返回行数 */
     private StorageResult simulateCreateTable(ASTNode.CreateTableStmt stmt) {
-        // 语义分析已保证表不存在；建表语句的列暂无类型，按 Catalog 默认（VARCHAR）登记
-        tables.put(stmt.getTableName(),
-                new TableData(toColumnInfos(stmt.getColumns()), new ArrayList<>()));
-        catalog.createTable(stmt.getTableName(), stmt.getColumns());
         return StorageResult.rowcount(0);
     }
 
-    /** 把列名清单转为默认 VARCHAR 类型的列信息清单 */
-    private List<CatalogImpl.ColumnInfo> toColumnInfos(List<String> names) {
+    /** 把建表列定义转为列信息清单（类型字符串 -> DataType，未知类型按 VARCHAR） */
+    private List<CatalogImpl.ColumnInfo> toColumnInfos(List<ASTNode.CreateTableStmt.ColumnDef> defs) {
         List<CatalogImpl.ColumnInfo> infos = new ArrayList<>();
-        for (String name : names) {
-            infos.add(new CatalogImpl.ColumnInfo(name, CatalogImpl.DataType.VARCHAR));
+        for (ASTNode.CreateTableStmt.ColumnDef def : defs) {
+            CatalogImpl.DataType type = "INT".equalsIgnoreCase(def.getType())
+                    ? CatalogImpl.DataType.INT
+                    : CatalogImpl.DataType.VARCHAR;
+            infos.add(new CatalogImpl.ColumnInfo(def.getName(), type));
         }
         return infos;
     }
@@ -288,17 +300,20 @@ public class SqlEngine {
         return Boolean.TRUE.equals(evalExpr(cond, row, columns));
     }
 
-    /** 递归求值表达式：字面量/列引用直接取值，二元表达式按运算符分发 */
+    /** 递归求值表达式：字面量/列引用直接取值，NOT 与二元表达式按运算符分发 */
     private Object evalExpr(ASTNode expr, List<Object> row, List<String> columns) {
         if (expr instanceof ASTNode.LiteralExpr literal) {
             return literalValue(literal);
         }
-        if (expr instanceof ASTNode.ColumnRef ref) {
+        if (expr instanceof ASTNode.IdentifierExpr ref) {
             int index = columns.indexOf(ref.getName());
             if (index < 0) {
                 throw new IllegalArgumentException("列不存在: " + ref.getName());
             }
             return row.get(index);
+        }
+        if (expr instanceof ASTNode.UnaryExpr unary) {
+            return !toBoolean(evalExpr(unary.getOperand(), row, columns));
         }
         if (expr instanceof ASTNode.BinaryExpr binary) {
             return evalBinary(binary, row, columns);

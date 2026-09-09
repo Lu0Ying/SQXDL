@@ -186,10 +186,14 @@ public class SemanticAnalyzer {
      * 递归访问表达式树的所有节点。
      */
     private CatalogImpl.DataType analyzeExpr(ASTNode expr, String tableName) {
-        if (expr instanceof ASTNode.ColumnRef col) {
-            return analyzeColumnRef(col, tableName);
+        if (expr instanceof ASTNode.IdentifierExpr col) {
+            return analyzeIdentifier(col, tableName);
         } else if (expr instanceof ASTNode.LiteralExpr lit) {
             return literalType(lit);
+        } else if (expr instanceof ASTNode.UnaryExpr unary) {
+            // NOT 操作数递归分析（校验其中列的存在性），结果视为布尔
+            analyzeExpr(unary.getOperand(), tableName);
+            return CatalogImpl.DataType.BOOLEAN;
         } else if (expr instanceof ASTNode.BinaryExpr bin) {
             return analyzeBinaryExpr(bin, tableName);
         } else {
@@ -197,7 +201,7 @@ public class SemanticAnalyzer {
         }
     }
 
-    private CatalogImpl.DataType analyzeColumnRef(ASTNode.ColumnRef col, String tableName) {
+    private CatalogImpl.DataType analyzeIdentifier(ASTNode.IdentifierExpr col, String tableName) {
         String colName = col.getName();
         if (!catalog.columnExists(tableName, colName)) {
             throw error("表 " + tableName + " 中不存在列 " + colName, col);
@@ -211,7 +215,10 @@ public class SemanticAnalyzer {
 
         String op = expr.getOp();
 
-        if (isComparisonOp(op)) {
+        // 逻辑运算：操作数递归分析即可，结果视为布尔（类型系统暂不要求操作数为 BOOLEAN）
+        if (isLogicalOp(op)) {
+            return CatalogImpl.DataType.BOOLEAN;
+        } else if (isComparisonOp(op)) {
             if (!typeCompatible(leftType, rightType)) {
                 throw error("比较运算符 " + op + " 两侧类型不兼容: "
                         + leftType + " vs " + rightType, expr);
@@ -246,8 +253,13 @@ public class SemanticAnalyzer {
     }
 
     private boolean isComparisonOp(String op) {
-        return op.equals("=") || op.equals("!=") || op.equals(">")
+        return op.equals("=") || op.equals("==") || op.equals("!=") || op.equals(">")
                 || op.equals("<") || op.equals(">=") || op.equals("<=");
+    }
+
+    /** 逻辑运算符（Parser 已把 && / || 归一化为大写 AND / OR） */
+    private boolean isLogicalOp(String op) {
+        return op.equals("AND") || op.equals("OR");
     }
 
     private boolean isArithmeticOp(String op) {

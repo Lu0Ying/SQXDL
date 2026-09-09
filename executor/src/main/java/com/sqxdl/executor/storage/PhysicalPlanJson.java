@@ -59,22 +59,32 @@ public final class PhysicalPlanJson {
         }
     }
 
-    /** 写出条件表达式（column / literal / binary 三种节点） */
+    /** 写出条件表达式（column / literal / binary / NOT 等价改写四种节点） */
     private static void writeCondition(ASTNode cond, StringBuilder sb) {
         if (cond instanceof ASTNode.BinaryExpr e) {
-            sb.append("{\"type\":\"binary\",\"op\":").append(Json.quote(e.getOp()))
+            sb.append("{\"type\":\"binary\",\"op\":").append(Json.quote(normalizeOp(e.getOp())))
               .append(",\"left\":");
             writeCondition(e.getLeft(), sb);
             sb.append(",\"right\":");
             writeCondition(e.getRight(), sb);
             sb.append('}');
-        } else if (cond instanceof ASTNode.ColumnRef c) {
+        } else if (cond instanceof ASTNode.UnaryExpr n) {
+            // 存储核心协议无 not 节点，等价改写：NOT x -> x = FALSE
+            sb.append("{\"type\":\"binary\",\"op\":\"=\",\"left\":");
+            writeCondition(n.getOperand(), sb);
+            sb.append(",\"right\":{\"type\":\"literal\",\"value\":false}}");
+        } else if (cond instanceof ASTNode.IdentifierExpr c) {
             sb.append("{\"type\":\"column\",\"name\":").append(Json.quote(c.getName())).append('}');
         } else if (cond instanceof ASTNode.LiteralExpr l) {
             writeLiteralValue(l, sb);
         } else {
             throw new IllegalArgumentException("不支持的条件表达式: " + cond);
         }
+    }
+
+    /** 运算符归一化：Parser 允许 == 写法，存储核心只识别 = */
+    private static String normalizeOp(String op) {
+        return "==".equals(op) ? "=" : op;
     }
 
     /** 条件可省略（update/delete 无 WHERE 时作用于全表），为 null 时不写字段 */

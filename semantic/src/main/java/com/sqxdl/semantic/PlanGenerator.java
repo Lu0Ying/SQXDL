@@ -60,7 +60,12 @@ public class PlanGenerator {
                     optimizeCondition(stmt.getWhereCond()));
         }
         if (ast instanceof ASTNode.CreateTableStmt stmt) {
-            return new PlanNode.CreateTablePlan(stmt.getTableName(), stmt.getColumns());
+            // CreateTablePlan 契约只保留列名清单（存储核心建表协议不含类型）
+            List<String> columnNames = new ArrayList<>();
+            for (ASTNode.CreateTableStmt.ColumnDef def : stmt.getColumns()) {
+                columnNames.add(def.getName());
+            }
+            return new PlanNode.CreateTablePlan(stmt.getTableName(), columnNames);
         }
         throw new IllegalArgumentException("不支持的语句类型: " + ast.getClass().getSimpleName());
     }
@@ -128,7 +133,7 @@ public class PlanGenerator {
      * 递归优化表达式：先处理子节点，再做常量折叠和表达式化简。
      */
     private ASTNode optimizeExpr(ASTNode expr) {
-        if (expr instanceof LiteralExpr || expr instanceof ASTNode.ColumnRef) {
+        if (expr instanceof LiteralExpr || expr instanceof ASTNode.IdentifierExpr) {
             return expr;
         }
         if (!(expr instanceof ASTNode.BinaryExpr bin)) {
@@ -194,14 +199,15 @@ public class PlanGenerator {
             return new LiteralExpr(node.getLine(), node.getCol(), String.valueOf(result), Kind.NUMBER);
         }
 
-        // 比较运算：两边必须同类型
+        // 比较运算：两边必须同类型；数值用 Double 比较，同时兼容整数与小数
         if (isComparisonOp(op)) {
             if (left.getKind() != right.getKind()) {
                 return null;
             }
             int cmp;
             if (left.getKind() == Kind.NUMBER) {
-                cmp = Integer.compare(Integer.parseInt(left.getValue()), Integer.parseInt(right.getValue()));
+                cmp = Double.compare(Double.parseDouble(left.getValue()),
+                        Double.parseDouble(right.getValue()));
             } else {
                 cmp = left.getValue().compareTo(right.getValue());
             }
@@ -315,7 +321,7 @@ public class PlanGenerator {
     }
 
     private boolean isComparisonOp(String op) {
-        return op.equals("=") || op.equals("!=") || op.equals(">")
+        return op.equals("=") || op.equals("==") || op.equals("!=") || op.equals(">")
                 || op.equals("<") || op.equals(">=") || op.equals("<=");
     }
 
@@ -411,13 +417,13 @@ public class PlanGenerator {
 
     /**
      * 递归写入条件表达式（AST → JSON condition）。
-     * - ColumnRef → {"type":"column","name":"id"}
+     * - IdentifierExpr → {"type":"column","name":"id"}
      * - LiteralExpr → {"type":"literal","value":1}（value 用 JSON 原生类型）
      * - BinaryExpr → {"type":"binary","op":">","left":{...},"right":{...}}
      */
     private void writeExpr(StringBuilder sb, ASTNode expr) {
         sb.append("{");
-        if (expr instanceof ASTNode.ColumnRef col) {
+        if (expr instanceof ASTNode.IdentifierExpr col) {
             sb.append("\"type\":\"column\",\"name\":");
             writeJsonString(sb, col.getName());
         } else if (expr instanceof LiteralExpr lit) {

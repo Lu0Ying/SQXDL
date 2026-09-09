@@ -1,18 +1,15 @@
 package com.sqxdl.executor;
 
-import com.sqxdl.parser.ASTNode;
-import com.sqxdl.parser.Lexer;
-import com.sqxdl.parser.Parser;
-import com.sqxdl.semantic.CatalogImpl;
-import com.sqxdl.semantic.PlanGenerator;
-import com.sqxdl.semantic.SemanticAnalyzer;
+import com.sqxdl.executor.storage.StorageResult;
 
 import java.util.Scanner;
 
 /**
  * 程序入口（D 组）。
- * 职责：启动 SQXDL 的交互式 REPL，读取用户 SQL 并驱动
- *       词法 -> 语法 -> 语义 -> 计划生成 -> 执行 的完整流水线。
+ * 职责：启动 SQXDL 的交互式 REPL，读取用户 SQL 并交给 {@link SqlEngine}
+ *       驱动 词法 -> 语法 -> 语义 -> 计划生成 -> 执行 的完整流水线。
+ * 执行模式为 AUTO：优先真实存储核心（storage_core.exe），
+ * 存储核心不可用时自动回退内置示例数据，保证 Demo 完整可演示。
  */
 public class Main {
 
@@ -24,11 +21,10 @@ public class Main {
         try (Scanner scanner = new Scanner(System.in)) {
             System.out.println("SQXDL 交互式终端已启动。输入 SQL 后回车执行，输入 exit 退出。");
 
-            // 数据字典与执行器在 REPL 生命周期内复用，保证建表元数据跨语句可见
-            CatalogImpl catalog = new CatalogImpl();
-            SemanticAnalyzer analyzer = new SemanticAnalyzer(catalog);
-            PlanGenerator generator = new PlanGenerator(catalog);
-            Executor executor = new Executor();
+            // 执行引擎与结果渲染器在 REPL 生命周期内复用；
+            // 引擎持有的数据字典与存储核心会话跨语句保持（建表元数据/数据可见）
+            SqlEngine engine = new SqlEngine(SqlEngine.Mode.AUTO);
+            Executor renderer = new Executor();
 
             while (true) {
                 System.out.print("sqxdl> ");
@@ -56,10 +52,12 @@ public class Main {
                         break;
                     }
 
-                    // 流水线：词法 -> 语法 -> 语义 -> 计划生成 -> 执行
-                    ASTNode ast = new Parser(new Lexer(sql)).parse();
-                    analyzer.analyze(ast);
-                    executor.execute(generator.generate(ast));
+                    StorageResult result = engine.execute(sql);
+                    // 回退到模拟执行时给出提示，便于区分真实存储与内置数据
+                    if (engine.getFallbackReason() != null) {
+                        System.out.println("提示: " + engine.getFallbackReason());
+                    }
+                    renderer.render(result);
                 } catch (Exception e) {
                     System.err.println("⚠执行出错: " + e.getMessage());
                 }

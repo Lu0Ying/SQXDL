@@ -10,7 +10,15 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Lexer 单元测试：覆盖五类 Token 识别、EOF、行列号、拼写纠错与异常分支。
+ * Lexer 单元测试，按功能分为以下分组：
+ * <ul>
+ *   <li>五类 Token 识别（关键字 / 标识符 / 常量 / 运算符 / 分隔符）与 EOF；</li>
+ *   <li>行列号跟踪（跨行、换行累计）；</li>
+ *   <li>异常分支：非法字符、未闭合字符串、非法标识符、未闭合块注释；</li>
+ *   <li>拼写纠错：编辑距离为 1 的关键字自动纠正；</li>
+ *   <li>对照课件要求的补充用例：单行/块注释、转义引号、小数、==、全关键字集、多语句、行列号复刻。</li>
+ * </ul>
+ * 共 23 个用例。运行：mvn -pl parser test
  */
 class LexerTest {
 
@@ -28,6 +36,7 @@ class LexerTest {
 
     @Test
     void basicSelectProducesExpectedTokens() {
+        // 一条最简 SELECT 的完整切词结果：SELECT/id/FROM/t/;/EOF 共 6 个 Token
         List<Token> ts = tokenize("SELECT id FROM t;");
         assertEquals(6, ts.size(), "应为 SELECT/id/FROM/t/;/EOF 共 6 个 Token");
 
@@ -51,6 +60,7 @@ class LexerTest {
 
     @Test
     void keywordIsCaseInsensitive() {
+        // 关键字不区分大小写：小写 select/from/where 均识别为关键字；* 为运算符
         List<Token> ts = tokenize("select * from stu where age > 18");
         assertEquals(Token.Type.KEYWORD, ts.get(0).getType(), "小写 select 应识别为关键字");
         assertEquals(Token.Type.OPERATOR, ts.get(1).getType(), "* 应为运算符");
@@ -61,6 +71,7 @@ class LexerTest {
 
     @Test
     void stringConstantDropsQuotes() {
+        // 字符串字面量：词素不含引号（'Tom' → Tom）
         List<Token> ts = tokenize("WHERE name = 'Tom'");
         Token s = ts.get(3);
         assertEquals(Token.Type.CONST, s.getType());
@@ -69,6 +80,7 @@ class LexerTest {
 
     @Test
     void twoCharOperatorsRecognized() {
+        // 双字符运算符整体识别：<= 不会被拆成 < 与 =，&& 同理
         List<Token> ts = tokenize("a <= b && c >= d || e != f");
         List<String> ops = new ArrayList<>();
         for (Token t : ts) {
@@ -81,6 +93,7 @@ class LexerTest {
 
     @Test
     void emptyInputReturnsEofOnly() {
+        // 空输入：只产生一个 EOF Token
         List<Token> ts = tokenize("");
         assertEquals(1, ts.size());
         assertEquals(Token.Type.EOF, ts.get(0).getType());
@@ -88,6 +101,7 @@ class LexerTest {
 
     @Test
     void whitespaceOnlyReturnsEofOnly() {
+        // 纯空白输入：空白被跳过，只产生一个 EOF Token
         List<Token> ts = tokenize("   \t\r\n  ");
         assertEquals(1, ts.size());
         assertEquals(Token.Type.EOF, ts.get(0).getType());
@@ -95,6 +109,7 @@ class LexerTest {
 
     @Test
     void lineAndColTrackingAcrossNewline() {
+        // 行列号跟踪：换行后行号 +1、列号从 1 重新计数
         List<Token> ts = tokenize("SELECT id\nFROM t");
         // SELECT 在第 1 行第 1 列
         assertEquals(1, ts.get(0).getLine());
@@ -118,6 +133,7 @@ class LexerTest {
 
     @Test
     void illegalCharThrowsWithPosition() {
+        // 非法字符（@）抛异常，并携带精确行列号
         Lexer lexer = new Lexer("SELECT @ FROM t");
         lexer.nextToken(); // 消费 SELECT
         SqxdlException e = assertThrows(SqxdlException.class, lexer::nextToken);
@@ -128,6 +144,7 @@ class LexerTest {
 
     @Test
     void unterminatedStringThrows() {
+        // 字符串未闭合：抛异常
         Lexer lexer = new Lexer("SELECT 'abc");
         lexer.nextToken(); // 消费 SELECT，未闭合字符串在第 2 个 Token 触发异常
         SqxdlException e = assertThrows(SqxdlException.class, lexer::nextToken);
@@ -136,6 +153,7 @@ class LexerTest {
 
     @Test
     void digitFollowedByLetterThrows() {
+        // 数字后紧跟字母不是合法标识符（123abc）：抛异常
         SqxdlException e = assertThrows(SqxdlException.class,
                 () -> new Lexer("123abc").nextToken());
         assertTrue(e.getMessage().contains("非法标识符"));
@@ -159,6 +177,7 @@ class LexerTest {
 
     @Test
     void underscoreIdentifierSupported() {
+        // 标识符支持下划线：_id 与 my_table 均识别为标识符
         List<Token> ts = tokenize("SELECT _id FROM my_table");
         assertEquals(Token.Type.IDENTIFIER, ts.get(1).getType());
         assertEquals("_id", ts.get(1).getLexeme());
@@ -170,6 +189,7 @@ class LexerTest {
 
     @Test
     void lineCommentSkipped() {
+        // 单行注释 -- ... 被跳过：注释里的 SELECT 不产出 Token
         List<Token> ts = tokenize("SELECT id -- 这是注释 SELECT\nFROM t");
         assertEquals(5, ts.size(), "注释内容不应产出 Token：SELECT/id/FROM/t/EOF");
         assertEquals(Token.Type.EOF, ts.get(4).getType());
@@ -177,6 +197,7 @@ class LexerTest {
 
     @Test
     void blockCommentSkippedAcrossLines() {
+        // 块注释 /* ... */ 跨行被跳过：注释里的 FROM 不应被识别；id 应落在第 2 行
         List<Token> ts = tokenize("SELECT /* 多行\n注释 FROM */ id FROM t");
         // 注释里的 "FROM" 不应被识别；id 应落在第 2 行
         assertEquals("id", ts.get(1).getLexeme());
@@ -185,6 +206,7 @@ class LexerTest {
 
     @Test
     void unterminatedBlockCommentThrows() {
+        // 块注释未闭合：抛异常
         SqxdlException e = assertThrows(SqxdlException.class,
                 () -> tokenize("SELECT /* 未闭合"));
         assertTrue(e.getMessage().contains("未闭合的块注释"));
@@ -192,6 +214,7 @@ class LexerTest {
 
     @Test
     void escapedQuoteInString() {
+        // 字符串内 '' 转义为字面单引号：'Tom''s book' → Tom's book
         List<Token> ts = tokenize("'Tom''s book'");
         assertEquals(2, ts.size());
         assertEquals(Token.Type.CONST, ts.get(0).getType());
@@ -200,6 +223,7 @@ class LexerTest {
 
     @Test
     void decimalConstantSupported() {
+        // 小数常量整体识别：3.14 为一个 CONST Token
         List<Token> ts = tokenize("3.14");
         assertEquals(2, ts.size());
         assertEquals(Token.Type.CONST, ts.get(0).getType());
@@ -208,6 +232,7 @@ class LexerTest {
 
     @Test
     void equalityOperatorRecognized() {
+        // == 运算符（与 = 并存）整体识别
         List<Token> ts = tokenize("a == b");
         List<String> ops = new ArrayList<>();
         for (Token t : ts) {
@@ -220,6 +245,7 @@ class LexerTest {
 
     @Test
     void fullKeywordSetRecognized() {
+        // 关键字表全量识别（逐个关键字均为 KEYWORD）
         List<Token> ts = tokenize("SELECT FROM WHERE CREATE TABLE INSERT INTO VALUES DELETE AND");
         for (int i = 0; i < 10; i++) {
             assertEquals(Token.Type.KEYWORD, ts.get(i).getType(), "第 " + i + " 个应为关键字");
@@ -228,6 +254,7 @@ class LexerTest {
 
     @Test
     void multipleStatementsInOneInput() {
+        // 一次输入可含多条 SQL 语句：分号与 SELECT 数量均为 2
         List<Token> ts = tokenize("SELECT a FROM t; SELECT b FROM u;");
         long semicolons = ts.stream().filter(t -> ";".equals(t.getLexeme())).count();
         long selects = ts.stream().filter(t -> "SELECT".equals(t.getLexeme())).count();

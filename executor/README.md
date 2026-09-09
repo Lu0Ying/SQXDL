@@ -46,13 +46,13 @@ SwingDemo (GUI) ─────────┘                     │
 
 - **SqlEngine.java** — CLI 与 GUI 共用的执行门面。完整流水线：SQL 文本 → Lexer/Parser（A 组）→ 语义分析（B 组）→ 计划生成 → 执行。两种模式：
   - `AUTO`：优先真实存储核心，失败（`STORAGE_UNAVAILABLE`/`STORAGE_TIMEOUT`）回退模拟；
-  - `LOCAL`：始终用内置示例数据模拟（存储核心无持久化，数据无法跨语句保留，界面演示用它）。
-  - 模拟执行支持 SELECT（投影 + WHERE 过滤）、INSERT、UPDATE、DELETE、CREATE TABLE；条件求值 `evalExpr` 递归处理二元表达式（AND/OR 短路、算术、数值/字符串自适应比较）。示例表按 `ColumnInfo` 带类型注册进 Catalog，让 `age > 20` 走真实类型校验。
-- **Executor.java** — CLI 结果展示。按结果类型输出：数据集画成按列宽对齐的文本表格、行数或错误。只做展示，不感知存储协议。
+  - `LOCAL`：始终用内置示例数据模拟（数据保存在 JVM 内，演示效果稳定，界面演示用它）。
+  - 模拟执行支持 SELECT（投影 + WHERE 过滤）、INSERT、UPDATE、DELETE、CREATE TABLE；条件求值 `evalExpr` 递归处理 NOT 与二元表达式（AND/OR 短路、算术、数值/字符串自适应比较）。示例表按 `ColumnInfo` 带类型注册进 Catalog，让 `age > 20` 走真实类型校验。
+- **Executor.java** — CLI 结果展示（`render`）。按结果类型输出：数据集画成按列宽对齐的文本表格、行数或错误。只做展示，不感知存储协议与执行细节。
 
 ### 存储桥接层（storage/）
 
-- **StorageClient.java** — 启动 `storage_core.exe` 子进程：计划 JSON 走 stdin（Windows 命令行参数中双引号会被 CRT 剥离，跨语言传 JSON 必须走 stdin），结果从 stdout 读一行 JSON。10 秒超时强杀；exe 缺失、启动失败、超时、非法返回全部封装为带错误码的 ERROR 结果，调用方永不崩溃。解析时取 stdout 最后一个非空行，兼容核心在结果前输出状态行。exe 路径可用 `-Dsqxdl.storage.exe=<路径>` 覆盖。
+- **StorageClient.java** — 服务式会话调用 `storage_core.exe`：进程常驻主循环（读一行计划 → 输出一行结果），建表目录与数据跨语句保持。计划 JSON 走 stdin（Windows 命令行参数中双引号会被 CRT 剥离，跨语言传 JSON 必须走 stdin），结果从 stdout 读一行 JSON。单次执行 10 秒超时强杀，进程退出或非法返回时自动重建会话；exe 缺失、启动失败、超时全部封装为带错误码的 ERROR 结果，调用方永不崩溃。exe 路径可用 `-Dsqxdl.storage.exe=<路径>` 覆盖。
 - **PhysicalPlanJson.java** — 把计划树按存储核心约定格式转 JSON：查询计划为 `project → filter → scan` 三层嵌套，写操作为单对象；条件表达式递归写出（binary/column/literal），UPDATE/DELETE 无 WHERE 时省略 condition 字段。
 - **Json.java** — 递归下降 JSON 解析器（对象 → LinkedHashMap、数字按小数点/指数区分 Long/Double）与字符串转义（`quote`）。手写实现避免第三方依赖，保证四人协作离线可构建。
 - **StorageResult.java** — 统一结果封装，三种类型：`RESULTSET`（列名 + 行数据）、`ROWCOUNT`（受影响行数）、`ERROR`（错误码 + 信息）；提供静态工厂与 `parse()`（反序列化存储核心返回的 JSON）。

@@ -109,7 +109,7 @@ class SemanticAnalyzerTest {
 
     @Test
     void select_whereColumnExists_success() {
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "age");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "age");
         ASTNode.LiteralExpr lit = new ASTNode.LiteralExpr(1, 15, "18", ASTNode.LiteralExpr.Kind.NUMBER);
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 12, ">", col, lit);
 
@@ -123,7 +123,7 @@ class SemanticAnalyzerTest {
 
     @Test
     void select_whereColumnNotExists_throwsException() {
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "nonexistent");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "nonexistent");
         ASTNode.LiteralExpr lit = new ASTNode.LiteralExpr(1, 15, "18", ASTNode.LiteralExpr.Kind.NUMBER);
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 12, ">", col, lit);
 
@@ -142,7 +142,7 @@ class SemanticAnalyzerTest {
 
     @Test
     void select_typeMismatch_intVsString_throwsException() {
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "age");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "age");
         ASTNode.LiteralExpr lit = new ASTNode.LiteralExpr(1, 15, "abc", ASTNode.LiteralExpr.Kind.STRING);
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 12, ">", col, lit);
 
@@ -157,7 +157,7 @@ class SemanticAnalyzerTest {
 
     @Test
     void select_typeMatch_intVsInt_success() {
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "age");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "age");
         ASTNode.LiteralExpr lit = new ASTNode.LiteralExpr(1, 15, "18", ASTNode.LiteralExpr.Kind.NUMBER);
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 12, ">", col, lit);
 
@@ -171,7 +171,7 @@ class SemanticAnalyzerTest {
 
     @Test
     void select_typeMatch_stringVsString_success() {
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "name");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "name");
         ASTNode.LiteralExpr lit = new ASTNode.LiteralExpr(1, 15, "Alice", ASTNode.LiteralExpr.Kind.STRING);
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 12, "=", col, lit);
 
@@ -329,7 +329,9 @@ class SemanticAnalyzerTest {
     void createTable_success() {
         ASTNode.CreateTableStmt stmt = new ASTNode.CreateTableStmt(
                 1, 1, "course",
-                Arrays.asList("cid", "cname")
+                Arrays.asList(
+                        new ASTNode.CreateTableStmt.ColumnDef("cid", "INT"),
+                        new ASTNode.CreateTableStmt.ColumnDef("cname", "VARCHAR"))
         );
         analyzer.analyze(stmt);
     }
@@ -338,7 +340,9 @@ class SemanticAnalyzerTest {
     void createTable_alreadyExists_throwsException() {
         ASTNode.CreateTableStmt stmt = new ASTNode.CreateTableStmt(
                 1, 1, "student",
-                Arrays.asList("id", "name")
+                Arrays.asList(
+                        new ASTNode.CreateTableStmt.ColumnDef("id", "INT"),
+                        new ASTNode.CreateTableStmt.ColumnDef("name", "VARCHAR"))
         );
         SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
         assertTrue(ex.getMessage().contains("已存在"));
@@ -348,7 +352,7 @@ class SemanticAnalyzerTest {
 
     @Test
     void select_nestedArithmetic_success() {
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "age");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "age");
         ASTNode.LiteralExpr lit = new ASTNode.LiteralExpr(1, 15, "10", ASTNode.LiteralExpr.Kind.NUMBER);
         ASTNode.BinaryExpr add = new ASTNode.BinaryExpr(1, 12, "+", col, lit);
 
@@ -365,7 +369,7 @@ class SemanticAnalyzerTest {
 
     @Test
     void select_arithmeticWithString_throwsException() {
-        ASTNode.ColumnRef col = new ASTNode.ColumnRef(1, 10, "name");
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "name");
         ASTNode.LiteralExpr lit = new ASTNode.LiteralExpr(1, 15, "10", ASTNode.LiteralExpr.Kind.NUMBER);
         ASTNode.BinaryExpr add = new ASTNode.BinaryExpr(1, 12, "+", col, lit);
 
