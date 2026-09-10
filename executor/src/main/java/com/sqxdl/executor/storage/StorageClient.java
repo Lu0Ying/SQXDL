@@ -122,12 +122,25 @@ public class StorageClient {
         return process;
     }
 
-    /** 关闭当前会话：结束进程并释放读取器（幂等） */
+    /** 关闭当前会话：先发协议 exit 让核心正常落盘，超时再强杀（幂等） */
     private void closeSession() {
         if (process != null) {
-            process.destroyForcibly();
-            process = null;
-            stdout = null;
+            try {
+                // 协议退出：存储核心收到 exit 后正常结束并把行数据刷入磁盘
+                process.getOutputStream().write("exit\n".getBytes(StandardCharsets.UTF_8));
+                process.getOutputStream().flush();
+                if (!process.waitFor(2, TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                }
+            } catch (IOException | InterruptedException e) {
+                process.destroyForcibly();
+                if (e instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                }
+            } finally {
+                process = null;
+                stdout = null;
+            }
         }
     }
 }
