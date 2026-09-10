@@ -371,4 +371,34 @@ class CatalogImplTest {
         assertTrue(names.contains("student"));
         assertTrue(names.contains("course"));
     }
+
+    // ========== DOUBLE 类型测试 ==========
+
+    @Test
+    void createTableWithTypes_doubleColumn() {
+        catalog.createTableWithTypes("products", Arrays.asList(
+                new CatalogImpl.ColumnInfo("id", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("price", CatalogImpl.DataType.DOUBLE),
+                new CatalogImpl.ColumnInfo("name", CatalogImpl.DataType.VARCHAR)
+        ));
+
+        assertEquals(CatalogImpl.DataType.DOUBLE, catalog.getColumnType("products", "price"));
+        assertEquals(CatalogImpl.DataType.INT, catalog.getColumnType("products", "id"));
+        assertEquals(CatalogImpl.DataType.VARCHAR, catalog.getColumnType("products", "name"));
+    }
+
+    @Test
+    void getColumnType_doubleViaSync() {
+        List<CatalogImpl.ColumnInfo> cols = Arrays.asList(
+                new CatalogImpl.ColumnInfo("price", CatalogImpl.DataType.DOUBLE),
+                new CatalogImpl.ColumnInfo("qty", CatalogImpl.DataType.INT)
+        );
+        MockMetadataProvider provider = new MockMetadataProvider(
+                List.of("products"), java.util.Map.of("products", cols));
+
+        catalog.syncFromStorage(provider);
+
+        assertEquals(CatalogImpl.DataType.DOUBLE, catalog.getColumnType("products", "price"));
+        assertEquals(CatalogImpl.DataType.INT, catalog.getColumnType("products", "qty"));
+    }
 }

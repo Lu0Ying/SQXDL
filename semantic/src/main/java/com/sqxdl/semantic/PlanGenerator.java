@@ -69,7 +69,7 @@ public class PlanGenerator {
             }
             return new PlanNode.CreateTablePlan(stmt.getTableName(), columnNames, columnDefs);
         }
-        if (ast instanceof ASTNode.ShowTablesStmt stmt) {
+        if (ast instanceof ASTNode.ShowStmt stmt) {
             return new PlanNode.ShowTablesPlan();
         }
         if (ast instanceof ASTNode.DropTableStmt stmt) {
@@ -202,9 +202,10 @@ public class PlanGenerator {
             if (left.getKind() != Kind.NUMBER || right.getKind() != Kind.NUMBER) {
                 return null;
             }
-            int l = Integer.parseInt(left.getValue());
-            int r = Integer.parseInt(right.getValue());
-            int result;
+            // 用 Double 统一处理，兼容整数与小数
+            double l = Double.parseDouble(left.getValue());
+            double r = Double.parseDouble(right.getValue());
+            double result;
             switch (op) {
                 case "+": result = l + r; break;
                 case "-": result = l - r; break;
@@ -215,7 +216,9 @@ public class PlanGenerator {
                     break;
                 default: return null;
             }
-            return new LiteralExpr(node.getLine(), node.getCol(), String.valueOf(result), Kind.NUMBER);
+            // 整数操作数且结果为整数时保持整数格式，否则输出小数
+            String resultStr = formatNumber(result, left.getValue(), right.getValue());
+            return new LiteralExpr(node.getLine(), node.getCol(), resultStr, Kind.NUMBER);
         }
 
         // 比较运算：两边必须同类型；数值用 Double 比较，同时兼容整数与小数
@@ -346,6 +349,21 @@ public class PlanGenerator {
 
     private boolean isArithmeticOp(String op) {
         return op.equals("+") || op.equals("-") || op.equals("*") || op.equals("/");
+    }
+
+    /**
+     * 格式化算术折叠结果。
+     * 当两个操作数都是整数且结果也是整数时，输出整数格式（如 "6"）；
+     * 否则输出小数格式（如 "3.14"），避免无意义的 ".0" 后缀。
+     */
+    private String formatNumber(double result, String leftVal, String rightVal) {
+        boolean allIntegers = !leftVal.contains(".") && !rightVal.contains(".");
+        if (allIntegers && result == Math.floor(result) && !Double.isInfinite(result)) {
+            return String.valueOf((long) result);
+        }
+        // 去掉无意义的尾随 .0（如 3.0 → 3.0 保留，因为操作数含小数）
+        String s = String.valueOf(result);
+        return s;
     }
 
     // ========== 物理计划 JSON 序列化 ==========

@@ -44,8 +44,8 @@ public class SemanticAnalyzer {
             analyzeDeleteStmt(stmt);
         } else if (ast instanceof ASTNode.CreateTableStmt stmt) {
             analyzeCreateTableStmt(stmt);
-        } else if (ast instanceof ASTNode.ShowTablesStmt stmt) {
-            analyzeShowTablesStmt(stmt);
+        } else if (ast instanceof ASTNode.ShowStmt stmt) {
+            analyzeShowStmt(stmt);
         } else if (ast instanceof ASTNode.DropTableStmt stmt) {
             analyzeDropTableStmt(stmt);
         } else {
@@ -174,8 +174,12 @@ public class SemanticAnalyzer {
 
     // ========== SHOW TABLES ==========
 
-    private void analyzeShowTablesStmt(ASTNode.ShowTablesStmt stmt) {
+    private void analyzeShowStmt(ASTNode.ShowStmt stmt) {
         // SHOW TABLES 无需额外检查，直接通过
+        // SHOW TABLE <表名> 需要检查表是否存在
+        if ("TABLE".equals(stmt.getTarget())) {
+            checkTableExists(stmt.getTableName(), stmt);
+        }
     }
 
     // ========== DROP TABLE ==========
@@ -259,10 +263,13 @@ public class SemanticAnalyzer {
             // 比较运算的结果是 BOOLEAN
             return CatalogImpl.DataType.BOOLEAN;
         } else if (isArithmeticOp(op)) {
-            if (leftType != CatalogImpl.DataType.INT || rightType != CatalogImpl.DataType.INT) {
-                throw error("算术运算符 " + op + " 两侧都必须是整数类型", expr);
+            if (!isNumeric(leftType) || !isNumeric(rightType)) {
+                throw error("算术运算符 " + op + " 两侧都必须是数值类型（INT 或 DOUBLE）", expr);
             }
-            return CatalogImpl.DataType.INT;
+            // 任一操作数为 DOUBLE 时结果为 DOUBLE，否则为 INT
+            return (leftType == CatalogImpl.DataType.DOUBLE || rightType == CatalogImpl.DataType.DOUBLE)
+                    ? CatalogImpl.DataType.DOUBLE
+                    : CatalogImpl.DataType.INT;
         } else {
             throw error("不支持的运算符: " + op, expr);
         }
@@ -278,14 +285,21 @@ public class SemanticAnalyzer {
 
     private CatalogImpl.DataType literalType(ASTNode.LiteralExpr lit) {
         return switch (lit.getKind()) {
-            case NUMBER -> CatalogImpl.DataType.INT;
+            case NUMBER -> lit.getValue().contains(".") || lit.getValue().contains("e") || lit.getValue().contains("E")
+                    ? CatalogImpl.DataType.DOUBLE
+                    : CatalogImpl.DataType.INT;
             case STRING -> CatalogImpl.DataType.VARCHAR;
             case BOOLEAN -> CatalogImpl.DataType.BOOLEAN;
         };
     }
 
     private boolean typeCompatible(CatalogImpl.DataType a, CatalogImpl.DataType b) {
-        return a == b;
+        if (a == b) {
+            return true;
+        }
+        // INT 与 DOUBLE 可以互相比较（数值类型兼容）
+        return (a == CatalogImpl.DataType.INT || a == CatalogImpl.DataType.DOUBLE)
+            && (b == CatalogImpl.DataType.INT || b == CatalogImpl.DataType.DOUBLE);
     }
 
     private boolean isComparisonOp(String op) {
@@ -296,6 +310,11 @@ public class SemanticAnalyzer {
     /** 逻辑运算符（Parser 已把 && / || 归一化为大写 AND / OR） */
     private boolean isLogicalOp(String op) {
         return op.equals("AND") || op.equals("OR");
+    }
+
+    /** 数值类型判断：INT 和 DOUBLE 都属于数值类型 */
+    private boolean isNumeric(CatalogImpl.DataType type) {
+        return type == CatalogImpl.DataType.INT || type == CatalogImpl.DataType.DOUBLE;
     }
 
     private boolean isArithmeticOp(String op) {
