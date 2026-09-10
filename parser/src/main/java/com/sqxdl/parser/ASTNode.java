@@ -353,4 +353,37 @@ public abstract class ASTNode {
             return "CreateTableStmt{table=" + tableName + ", columns=" + columns + "}";
         }
     }
+
+    /**
+     * SHOW 语句节点，对应语法：SHOW TABLES | SHOW TABLE tableName。
+     * target 为 "TABLES" 或 "TABLE"；target 为 "TABLE" 时 tableName 为表名，否则为 null。
+     */
+    public static class ShowStmt extends ASTNode {
+
+        /** SHOW 的目标：TABLES（列全部表）或 TABLE（查看指定表） */
+        private final String target;
+        /** SHOW TABLE 时指定表名；SHOW TABLES 时为 null */
+        private final String tableName;
+
+        public ShowStmt(int line, int col, String target, String tableName) {
+            super(line, col);
+            this.target = target;
+            this.tableName = tableName;
+        }
+
+        public String getTarget() {
+            return target;
+        }
+
+        public String getTableName() {
+            return tableName;
+        }
+
+        @Override
+        public String toString() {
+            return tableName == null
+                    ? "ShowStmt{target=TABLES}"
+                    : "ShowStmt{target=TABLE, table=" + tableName + "}";
+        }
+    }
 }

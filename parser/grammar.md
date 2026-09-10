@@ -12,7 +12,7 @@ Parser 采用**递归下降**方案实现，每个非终结符对应一个解析
 | `IDENTIFIER` | 标识符（表名 / 列名） | `student`、`id`、`my_table` |
 | `CONST` | 常量（数字 / 字符串字面量） | `18`、`'Tom'` |
 | `INT` / `VARCHAR` | 列类型关键字 | `INT`、`varchar` |
-| 关键字 | `SELECT` `FROM` `WHERE` `CREATE` `TABLE` `INSERT` `INTO` `VALUES` `DELETE` `UPDATE` `SET` `AND` `OR` `NOT` `TRUE` `FALSE` | 不区分大小写 |
+| 关键字 | `SELECT` `FROM` `WHERE` `CREATE` `TABLE` `TABLES` `INSERT` `INTO` `VALUES` `DELETE` `UPDATE` `SET` `AND` `OR` `NOT` `TRUE` `FALSE` `SHOW` | 不区分大小写 |
 | 运算符 | `=` `<` `>` `<=` `>=` `!=` `==` `+` `-` `*` `/` `&&` `\|\|` | `>=`、`&&` |
 | 分隔符 | `(` `)` `,` `;` | |
 | `EOF` | 输入结束 | |
@@ -29,7 +29,7 @@ Parser 采用**递归下降**方案实现，每个非终结符对应一个解析
 ## 2. 完整文法（BNF）
 
 ```
-statement      -> create_stmt | insert_stmt | select_stmt | update_stmt | delete_stmt
+statement      -> create_stmt | insert_stmt | select_stmt | update_stmt | delete_stmt | show_stmt
 
 create_stmt    -> CREATE TABLE IDENTIFIER '(' column_def { ',' column_def } ')' ';'
 column_def     -> IDENTIFIER type
@@ -48,6 +48,8 @@ assignment     -> IDENTIFIER '=' literal
 
 delete_stmt    -> DELETE FROM IDENTIFIER where_opt ';'
 
+show_stmt      -> SHOW ( TABLES | TABLE IDENTIFIER ) ';'
+
 expression     -> or_expr
 or_expr        -> and_expr { OR and_expr }
 and_expr       -> not_expr { AND not_expr }
@@ -62,7 +64,7 @@ literal        -> CONST | TRUE | FALSE
 
 > 与课程示例文法的关系：`select_stmt`、`select_list`、`where_opt`、`delete_stmt`、`create_stmt`、`column_def`、`type`、`insert_stmt` 与课程文法逐条对应。
 > `expression → or_expr`、`or_expr → and_expr { OR and_expr }`、`and_expr → not_expr { AND not_expr }`、`not_expr → NOT not_expr | comparison`、`comparison → primary [ comp_op primary ]`、`primary → IDENTIFIER | CONST | '(' expression ')'` 亦与课程文法一致。
-> 超集部分：`comparison` 的操作数改为 `additive`（`* /` 优先级高于 `+ -`，支持常量折叠 `1+2 → 3`）；`update_stmt` 为课程文法之外的能力扩展。
+> 超集部分：`comparison` 的操作数改为 `additive`（`* /` 优先级高于 `+ -`，支持常量折叠 `1+2 → 3`）；`update_stmt`、`show_stmt` 为课程文法之外的能力扩展。
 
 ### 运算符优先级（低 → 高）
 
@@ -91,7 +93,7 @@ or_expr -> and_expr { OR and_expr }
 ```
 
 即先解析一个 `and_expr`，再循环判断是否遇到 `OR`。文法本身不含左公因子冲突
-（各语句以互不相同的首关键字区分：`CREATE` / `INSERT` / `SELECT` / `UPDATE` / `DELETE`；
+（各语句以互不相同的首关键字区分：`CREATE` / `INSERT` / `SELECT` / `UPDATE` / `DELETE` / `SHOW`；
 `primary` 的 `IDENTIFIER | literal | '(' expression ')'` 首符号集互不相交），故无需提取左公因子。
 
 ---
@@ -103,7 +105,7 @@ or_expr -> and_expr { OR and_expr }
 
 1. 该文法规模小、无左公因子冲突，递归下降代码直观且与文法一一对应，便于维护；
 2. 每个非终结符对应一个解析函数（`parseCreateTable`、`parseSelect`、`parseInsert`、`parseUpdate`、
-   `parseDelete`、`parseWhere`、`parseExpr`、`parseOr`、`parseAnd`、`parseNot`、`parseComparison`、
+   `parseDelete`、`parseShow`、`parseWhere`、`parseExpr`、`parseOr`、`parseAnd`、`parseNot`、`parseComparison`、
    `parseAdditive`、`parseMultiplicative`、`parseOperand`、`parseSelectList`、`parseColumnDef` 等）；
 3. 单 Token 向前看（`peek()` / `advance()`）即可完成所有分支决策，等价于利用各非终结符的 **FIRST 集** 判断；
 4. 具备错误恢复能力：`parseAll()` 捕获 `SqxdlException` 后跳过到下一个 `;`（或 EOF）继续解析。
@@ -115,12 +117,13 @@ or_expr -> and_expr { OR and_expr }
 
 | 非终结符 | FIRST 集 | 分支依据（对应解析函数） |
 |---|---|---|
-| `statement` | `CREATE` `INSERT` `SELECT` `UPDATE` `DELETE` | `parse()` 按首关键字 switch |
+| `statement` | `CREATE` `INSERT` `SELECT` `UPDATE` `DELETE` `SHOW` | `parse()` 按首关键字 switch |
 | `create_stmt` | `CREATE` | |
 | `insert_stmt` | `INSERT` | |
 | `select_stmt` | `SELECT` | |
 | `update_stmt` | `UPDATE` | |
 | `delete_stmt` | `DELETE` | |
+| `show_stmt` | `SHOW` | `parseShow` 后按 `TABLE`/`TABLES` 分支 |
 | `column_def` | `IDENTIFIER` | `parseColumnDef` |
 | `type` | `INT` `VARCHAR` | `expectType` |
 | `id_list` / `select_list` | `*` `IDENTIFIER` | `parseSelectList` |
@@ -161,8 +164,9 @@ WHERE age > 18 AND;
 | 错误位置 | 期望终结符 |
 |---|---|
 | 表达式操作数（`parseOperand`） | `IDENTIFIER | CONST | '(' | ')' | NOT` |
-| 语句分发（`parse`） | `SELECT | INSERT | UPDATE | DELETE | CREATE` |
-| 语句收尾（`finishStatement`） | `';' | EOF | SELECT | INSERT | UPDATE | DELETE | CREATE` |
+| 语句分发（`parse`） | `SELECT | INSERT | UPDATE | DELETE | CREATE | SHOW` |
+| 语句收尾（`finishStatement`） | `';' | EOF | SELECT | INSERT | UPDATE | DELETE | CREATE | SHOW` |
+| SHOW 目标（`parseShow`） | `TABLE | TABLES` |
 | 列类型（`expectType`） | `INT | VARCHAR` |
 | 其他关键字 / 分隔符 / 运算符 | 对应终结符本身 |
 

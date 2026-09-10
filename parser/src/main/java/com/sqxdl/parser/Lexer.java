@@ -1,5 +1,7 @@
 package com.sqxdl.parser;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -18,10 +20,10 @@ public class Lexer {
 
     /** 关键字表（统一大写存放，识别时不区分大小写） */
     private static final Set<String> KEYWORDS = Set.of(
-            "SELECT", "FROM", "WHERE", "CREATE", "TABLE",
+            "SELECT", "FROM", "WHERE", "CREATE", "TABLE", "TABLES",
             "INSERT", "INTO", "VALUES", "DELETE", "UPDATE", "SET",
             "AND", "OR", "NOT", "TRUE", "FALSE",
-            "INT", "VARCHAR");
+            "INT", "VARCHAR", "SHOW");
 
     /** 双字符运算符，需先于单字符判断 */
     private static final Set<String> TWO_CHAR_OPERATORS = Set.of("<=", ">=", "!=", "==", "&&", "||");
@@ -30,6 +32,9 @@ public class Lexer {
     private int pos;
     private int line = 1;
     private int col = 1;
+
+    /** 拼写纠错提示（按出现顺序收集），由调用方决定何时展示，避免 Lexer 直接打印 */
+    private final List<String> spellWarnings = new ArrayList<>();
 
     public Lexer(String src) {
         this.src = src;
@@ -66,6 +71,16 @@ public class Lexer {
             return new Token(Token.Type.DELIMITER, String.valueOf(c), startLine, startCol);
         }
         throw new SqxdlException(line, col, "非法字符 '" + c + "'");
+    }
+
+    /**
+     * 返回本次词法分析过程中收集到的拼写纠错提示（按出现顺序）。
+     * 调用方（如 demo 或上层工具）自行决定是否打印，避免重复输出。
+     *
+     * @return 拼写提示列表；无纠错时为空列表
+     */
+    public List<String> getSpellWarnings() {
+        return spellWarnings;
     }
 
     /**
@@ -134,7 +149,8 @@ public class Lexer {
         }
         String corrected = correctSpelling(upper);
         if (corrected != null) {
-            System.err.println("[" + startLine + ":" + startCol + "] 拼写提示：将 '" + word + "' 纠正为 '" + corrected + "'");
+            spellWarnings.add("[" + startLine + ":" + startCol + "] 拼写提示：将 '"
+                    + word + "' 纠正为 '" + corrected + "'");
             return new Token(Token.Type.KEYWORD, corrected, startLine, startCol);
         }
         return new Token(Token.Type.IDENTIFIER, word, startLine, startCol);

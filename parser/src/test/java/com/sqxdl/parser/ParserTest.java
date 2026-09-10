@@ -18,9 +18,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *   <li>WHERE 表达式：比较运算、逻辑 AND/OR（关键字与 &amp;&amp;、|| 双语法）、算术优先级；</li>
  *   <li>课程要求：优先级示例（a = 1 OR b = 2 AND c = 3）、NOT 一元运算、括号、错误格式；</li>
  *   <li>编译期优化：常量折叠与逻辑简化；</li>
- *   <li>INSERT / UPDATE / DELETE / CREATE TABLE 语句。</li>
+ *   <li>INSERT / UPDATE / DELETE / CREATE TABLE / SHOW 语句。</li>
  * </ul>
- * 共 54 个用例。运行：mvn -pl parser test
+ * 共 58 个用例。运行：mvn -pl parser test
  */
 class ParserTest {
 
@@ -541,6 +541,40 @@ class ParserTest {
         // 不支持的语句关键字（如 DROP）由语句分发层拦截，列出期望的语句关键字
         SqxdlException e = assertThrows(SqxdlException.class, () -> parse("DROP TABLE t"));
         assertTrue(e.getMessage().contains("unexpected token 'DROP'"));
-        assertTrue(e.getMessage().contains("SELECT | INSERT | UPDATE | DELETE | CREATE"));
+        assertTrue(e.getMessage().contains("SELECT | INSERT | UPDATE | DELETE | CREATE | SHOW"));
+    }
+
+    // ========== SHOW 语句 ==========
+
+    @Test
+    void showTables() {
+        // SHOW TABLES：target 为 TABLES，无表名；关键字不区分大小写
+        ASTNode.ShowStmt stmt = (ASTNode.ShowStmt) parse("show tables;");
+        assertEquals("TABLES", stmt.getTarget(), "target 应统一存大写");
+        assertNull(stmt.getTableName(), "SHOW TABLES 不应有表名");
+    }
+
+    @Test
+    void showTableWithName() {
+        // SHOW TABLE name：target 为 TABLE，tableName 为指定表名
+        ASTNode.ShowStmt stmt = (ASTNode.ShowStmt) parse("SHOW TABLE student");
+        assertEquals("TABLE", stmt.getTarget());
+        assertEquals("student", stmt.getTableName());
+    }
+
+    @Test
+    void showMissingTargetThrows() {
+        // SHOW 后必须跟 TABLE | TABLES：缺少目标时报 unexpected token 并给出期望
+        SqxdlException e = assertThrows(SqxdlException.class, () -> parse("SHOW;"));
+        assertTrue(e.getMessage().contains("unexpected token ';'"), "应报 unexpected token");
+        assertTrue(e.getMessage().contains("TABLE | TABLES"), "应给出期望的 SHOW 目标");
+    }
+
+    @Test
+    void showTableMissingNameThrows() {
+        // SHOW TABLE 后必须跟表名：缺表名时报 unexpected token，期望 IDENTIFIER
+        SqxdlException e = assertThrows(SqxdlException.class, () -> parse("SHOW TABLE;"));
+        assertTrue(e.getMessage().contains("unexpected token ';'"), "应报 unexpected token");
+        assertTrue(e.getMessage().contains("IDENTIFIER"), "应给出期望 IDENTIFIER");
     }
 }
