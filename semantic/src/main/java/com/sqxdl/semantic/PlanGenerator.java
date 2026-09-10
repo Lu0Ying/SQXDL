@@ -205,6 +205,24 @@ public class PlanGenerator {
             if (left.getKind() != Kind.NUMBER || right.getKind() != Kind.NUMBER) {
                 return null;
             }
+            // 任一操作数为小数则按 DOUBLE 运算，结果保留小数格式；双整数保持整数运算
+            boolean decimal = left.getValue().contains(".") || right.getValue().contains(".");
+            if (decimal) {
+                double l = Double.parseDouble(left.getValue());
+                double r = Double.parseDouble(right.getValue());
+                double result;
+                switch (op) {
+                    case "+": result = l + r; break;
+                    case "-": result = l - r; break;
+                    case "*": result = l * r; break;
+                    case "/":
+                        if (r == 0) return null; // 除以零不折叠，留给运行时处理
+                        result = l / r;
+                        break;
+                    default: return null;
+                }
+                return new LiteralExpr(node.getLine(), node.getCol(), String.valueOf(result), Kind.NUMBER);
+            }
             int l = Integer.parseInt(left.getValue());
             int r = Integer.parseInt(right.getValue());
             int result;
