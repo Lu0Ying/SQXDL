@@ -215,6 +215,11 @@ storage_core.exe
 - `columns`：结果列名列表，与 `project` 的 `columns` 一致。
 - `rows`：二维数组，每个元素为一行，字段顺序与 `columns` 一致。
 
+> **JOIN 结果列命名**：连接结果同属 `resultset`，`columns` 按下述规则生成——
+> 左右两侧重名的列加来源前缀 `别名.列名`（别名取节点 `alias`，缺省为扫描表名），
+> 不重名的列保持原列名；`condition` 与上层 `project` 均通过该结果列名引用。
+> 若加前缀后仍重名（例如未设 `alias` 的自连接）返回 `INVALID_PLAN`。
+
 ### 2.2 SHOW TABLES：返回表名数据集
 
 ```json

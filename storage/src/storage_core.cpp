@@ -47,7 +47,7 @@ int main()
 
             const std::string op = physic_plan.value("op", "");
 
-            if (op == "scan" || op == "filter" || op == "project")
+            if (op == "scan" || op == "filter" || op == "project" || op == "join")
             {
                 result = execute_query_node(physic_plan);
             }
