@@ -16,7 +16,7 @@ const Value &EvalContext::resolve(const std::string &column_name) const
             return row_.at(i);
         }
     }
-    throw StorageError("COLUMN_NOT_FOUND", "列 " + column_name + " 不存在");
+    throw StorageError("COLUMN_NOT_FOUND", "Column " + column_name + " not found");
 }
 
 ColumnRefExpression::ColumnRefExpression(std::string name) : name_(std::move(name))
@@ -93,7 +93,7 @@ Value BinaryExpression::evaluate(const EvalContext &ctx) const
     {
         return Value(!Value::less(left, right));
     }
-    throw StorageError("INVALID_PLAN", "不支持的二元运算符: " + op_);
+    throw StorageError("INVALID_PLAN", "Unsupported binary operator: " + op_);
 }
 
 std::string BinaryExpression::to_string() const
@@ -103,33 +103,33 @@ std::string BinaryExpression::to_string() const
 
 namespace
 {
-// 运算符归一化：AND/OR 大小写不敏感，其余精确匹配
-std::string normalize_op(const std::string &op)
-{
-    if (op == "and")
+    // 运算符归一化：AND/OR 大小写不敏感，其余精确匹配
+    std::string normalize_op(const std::string &op)
     {
-        return "AND";
+        if (op == "and")
+        {
+            return "AND";
+        }
+        if (op == "or")
+        {
+            return "OR";
+        }
+        return op;
     }
-    if (op == "or")
-    {
-        return "OR";
-    }
-    return op;
-}
 } // namespace
 
 ExpressionPtr parse_expression(const nlohmann::json &j)
 {
     if (!j.is_object())
     {
-        throw StorageError("INVALID_PLAN", "condition 节点必须是 JSON 对象");
+        throw StorageError("INVALID_PLAN", "condition node must be a JSON object");
     }
     const std::string type = j.value("type", "");
     if (type == "column")
     {
         if (!j.contains("name") || !j.at("name").is_string())
         {
-            throw StorageError("INVALID_PLAN", "column 节点缺少字符串字段 name");
+            throw StorageError("INVALID_PLAN", "column node is missing string field: name");
         }
         return std::make_shared<ColumnRefExpression>(j.at("name").get<std::string>());
     }
@@ -137,7 +137,7 @@ ExpressionPtr parse_expression(const nlohmann::json &j)
     {
         if (!j.contains("value"))
         {
-            throw StorageError("INVALID_PLAN", "literal 节点缺少字段 value");
+            throw StorageError("INVALID_PLAN", "literal node is missing field: value");
         }
         return std::make_shared<LiteralExpression>(Value::from_json(j.at("value")));
     }
@@ -145,21 +145,21 @@ ExpressionPtr parse_expression(const nlohmann::json &j)
     {
         if (!j.contains("op") || !j.at("op").is_string())
         {
-            throw StorageError("INVALID_PLAN", "binary 节点缺少字符串字段 op");
+            throw StorageError("INVALID_PLAN", "binary node is missing string field: op");
         }
         const std::string op = normalize_op(j.at("op").get<std::string>());
         if (op != "=" && op != "!=" && op != "<>" && op != "<" && op != "<=" &&
             op != ">" && op != ">=" && op != "AND" && op != "OR")
         {
-            throw StorageError("INVALID_PLAN", "不支持的二元运算符: " + op);
+            throw StorageError("INVALID_PLAN", "Unsupported binary operator: " + op);
         }
         if (!j.contains("left") || !j.contains("right"))
         {
-            throw StorageError("INVALID_PLAN", "binary 节点缺少 left/right 子表达式");
+            throw StorageError("INVALID_PLAN", "binary node is missing left/right sub-expressions");
         }
         ExpressionPtr left = parse_expression(j.at("left"));
         ExpressionPtr right = parse_expression(j.at("right"));
         return std::make_shared<BinaryExpression>(op, std::move(left), std::move(right));
     }
-    throw StorageError("INVALID_PLAN", "未知 condition 节点 type: " + type);
+    throw StorageError("INVALID_PLAN", "Unknown condition node type: " + type);
 }

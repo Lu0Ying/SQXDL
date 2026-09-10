@@ -76,7 +76,8 @@ Value Value::from_json(const nlohmann::json &j)
     {
         return Value(j.get<std::string>());
     }
-    throw StorageError("INVALID_PLAN", "literal 仅支持 JSON 原生类型（数字/字符串/布尔/null）");
+    throw StorageError("INVALID_PLAN",
+                       "literal only supports JSON native types (number/string/boolean/null)");
 }
 
 nlohmann::json Value::to_json() const
@@ -114,7 +115,8 @@ bool Value::equals(const Value &lhs, const Value &rhs)
     if (lhs.type_ != rhs.type_)
     {
         throw StorageError("TYPE_MISMATCH",
-                            "类型不兼容：无法比较 " + lhs.to_string() + " 与 " + rhs.to_string());
+                            "Incompatible types: cannot compare " + lhs.to_string() +
+                                " with " + rhs.to_string());
     }
     switch (lhs.type_)
     {
@@ -144,7 +146,8 @@ bool Value::less(const Value &lhs, const Value &rhs)
     if (lhs.type_ != rhs.type_)
     {
         throw StorageError("TYPE_MISMATCH",
-                            "类型不兼容：无法比较 " + lhs.to_string() + " 与 " + rhs.to_string());
+                            "Incompatible types: cannot compare " + lhs.to_string() +
+                                " with " + rhs.to_string());
     }
     switch (lhs.type_)
     {
@@ -166,7 +169,7 @@ bool Value::truth_value() const
     case ValueType::Null:
         return false; // SQL：未知视为假
     default:
-        throw StorageError("TYPE_MISMATCH", "逻辑运算要求布尔类型的操作数");
+        throw StorageError("TYPE_MISMATCH", "Logical operations require boolean operands");
     }
 }
 

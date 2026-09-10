@@ -7,7 +7,7 @@ BufferPoolManager::BufferPoolManager(size_t pool_size, const std::string &db_fil
 {
     if (pool_size == 0)
     {
-        throw StorageError("INTERNAL_ERROR", "缓冲池大小必须大于 0");
+        throw StorageError("INTERNAL_ERROR", "Buffer pool size must be greater than 0");
     }
     for (size_t i = 0; i < pool_size_; ++i)
     {
@@ -40,13 +40,14 @@ Page *BufferPoolManager::fetch_page(page_id_t page_id)
     }
     if (!disk_manager_.is_allocated_page(page_id))
     {
-        throw StorageError("INTERNAL_ERROR", "页 " + std::to_string(page_id) + " 不存在或已删除");
+        throw StorageError("INTERNAL_ERROR", "Page " + std::to_string(page_id) + " does not exist or has been deleted");
     }
     Page *frame = acquire_frame();
     if (frame == nullptr)
     {
         throw StorageError("INTERNAL_ERROR",
-                           "缓冲池已满且所有页均被占用，无法读取页 " + std::to_string(page_id));
+                           "Buffer pool is full and all pages are pinned, cannot fetch page " +
+                               std::to_string(page_id));
     }
     frame->reset(page_id);
     disk_manager_.read_page(page_id, frame->data());
@@ -63,7 +64,7 @@ Page *BufferPoolManager::new_page(page_id_t *page_id)
     if (frame == nullptr)
     {
         disk_manager_.deallocate_page(id);
-        throw StorageError("INTERNAL_ERROR", "缓冲池已满且所有页均被占用，无法分配新页");
+        throw StorageError("INTERNAL_ERROR", "Buffer pool is full and all pages are pinned, cannot allocate a new page");
     }
     frame->reset(id);
     frame->pin_count_ = 1;
@@ -157,7 +158,7 @@ Page *BufferPoolManager::acquire_frame()
     auto it = page_table_.find(victim);
     if (it == page_table_.end())
     {
-        throw StorageError("INTERNAL_ERROR", "缓冲池内部状态不一致（淘汰页不在页表中）");
+        throw StorageError("INTERNAL_ERROR", "Buffer pool internal state inconsistent (evicted page not in page table)");
     }
     const size_t index = it->second;
     page_table_.erase(it);

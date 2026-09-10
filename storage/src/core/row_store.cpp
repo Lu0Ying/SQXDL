@@ -30,7 +30,7 @@ void RowStore::open(const std::string &db_file)
         if (ec)
         {
             throw StorageError("INTERNAL_ERROR",
-                               "无法创建数据目录 " + dir.string() + ": " + ec.message());
+                               "Failed to create data directory " + dir.string() + ": " + ec.message());
         }
     }
 
@@ -82,11 +82,11 @@ std::vector<Row> RowStore::load_table(const std::string &table_name)
     }
     catch (const std::exception &)
     {
-        throw StorageError("INTERNAL_ERROR", "表 " + table_name + " 的行数据损坏（无法解析）");
+        throw StorageError("INTERNAL_ERROR", "Row data of table " + table_name + " is corrupted (parse failed)");
     }
     if (!row_array.is_array())
     {
-        throw StorageError("INTERNAL_ERROR", "表 " + table_name + " 的行数据格式非法");
+        throw StorageError("INTERNAL_ERROR", "Row data of table " + table_name + " has invalid format");
     }
     std::vector<Row> rows;
     rows.reserve(row_array.size());
@@ -98,7 +98,7 @@ std::vector<Row> RowStore::load_table(const std::string &table_name)
         }
         catch (const StorageError &)
         {
-            throw StorageError("INTERNAL_ERROR", "表 " + table_name + " 的行数据损坏");
+            throw StorageError("INTERNAL_ERROR", "Row data of table " + table_name + " is corrupted");
         }
     }
     return rows;
@@ -116,7 +116,8 @@ void RowStore::remove_table(const std::string &table_name)
         if (!pool_->delete_page(page_id))
         {
             throw StorageError("INTERNAL_ERROR",
-                               "回收表 " + table_name + " 的页失败: " + std::to_string(page_id));
+                               "Failed to delete page " + std::to_string(page_id) +
+                                   " of table " + table_name);
         }
     }
     dir_.erase(it);
@@ -135,7 +136,7 @@ std::vector<page_id_t> RowStore::read_chain(page_id_t start)
     {
         if (std::find(chain.begin(), chain.end(), current) != chain.end())
         {
-            throw StorageError("INTERNAL_ERROR", "数据文件页链成环: " + std::to_string(current));
+            throw StorageError("INTERNAL_ERROR", "Data file page chain contains a cycle: " + std::to_string(current));
         }
         Page *page = pool_->fetch_page(current);
         page_id_t next = INVALID_PAGE_ID;
@@ -162,7 +163,7 @@ std::vector<page_id_t> RowStore::write_blob(const std::string &text,
         if (!pool_->delete_page(old_pages[i]))
         {
             throw StorageError("INTERNAL_ERROR",
-                               "回收数据页失败: " + std::to_string(old_pages[i]));
+                               "Failed to delete data page: " + std::to_string(old_pages[i]));
         }
     }
 
@@ -211,7 +212,7 @@ std::string RowStore::read_blob(const std::vector<page_id_t> &pages)
         if (next != expected_next || chunk_length > PAGE_PAYLOAD_CAPACITY)
         {
             pool_->unpin_page(pages[i], false);
-            throw StorageError("INTERNAL_ERROR", "数据文件页链损坏");
+            throw StorageError("INTERNAL_ERROR", "Data file page chain is corrupted");
         }
         text.append(data + 8, chunk_length);
         pool_->unpin_page(pages[i], false);
@@ -235,18 +236,18 @@ void RowStore::load_directory()
     }
     catch (const std::exception &)
     {
-        throw StorageError("INTERNAL_ERROR", "数据文件目录损坏（无法解析）");
+        throw StorageError("INTERNAL_ERROR", "Data file directory is corrupted (parse failed)");
     }
     if (!directory.is_object())
     {
-        throw StorageError("INTERNAL_ERROR", "数据文件目录格式非法");
+        throw StorageError("INTERNAL_ERROR", "Data file directory has invalid format");
     }
     for (auto it = directory.begin(); it != directory.end(); ++it)
     {
         const nlohmann::json &pages_json = it.value();
         if (!pages_json.is_array())
         {
-            throw StorageError("INTERNAL_ERROR", "数据文件目录中表 " + it.key() + " 的页链非法");
+            throw StorageError("INTERNAL_ERROR", "Invalid page chain for table " + it.key() + " in data file directory");
         }
         std::vector<page_id_t> pages;
         pages.reserve(pages_json.size());
@@ -254,7 +255,7 @@ void RowStore::load_directory()
         {
             if (!page_json.is_number_unsigned())
             {
-                throw StorageError("INTERNAL_ERROR", "数据文件目录中表 " + it.key() + " 的页链损坏");
+                throw StorageError("INTERNAL_ERROR", "Corrupted page chain for table " + it.key() + " in data file directory");
             }
             pages.push_back(page_json.get<page_id_t>());
         }

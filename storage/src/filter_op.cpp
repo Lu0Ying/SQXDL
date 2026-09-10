@@ -15,15 +15,15 @@ nlohmann::json execute_filter(const nlohmann::json &plan)
     {
         if (!plan.is_object())
         {
-            throw StorageError("INVALID_PLAN", "filter 计划必须是 JSON 对象");
+            throw StorageError("INVALID_PLAN", "filter plan must be a JSON object");
         }
         if (!plan.contains("child"))
         {
-            throw StorageError("INVALID_PLAN", "filter 缺少 child");
+            throw StorageError("INVALID_PLAN", "filter is missing child");
         }
         if (!plan.contains("condition"))
         {
-            throw StorageError("INVALID_PLAN", "filter 缺少 condition");
+            throw StorageError("INVALID_PLAN", "filter is missing condition");
         }
 
         nlohmann::json child = execute_query_node(plan.at("child"));
@@ -35,7 +35,7 @@ nlohmann::json execute_filter(const nlohmann::json &plan)
             !child.contains("rows") || !child.at("columns").is_array() ||
             !child.at("rows").is_array())
         {
-            throw StorageError("INVALID_PLAN", "filter 的 child 未返回合法数据集");
+            throw StorageError("INVALID_PLAN", "filter child did not return a valid result set");
         }
 
         ExpressionPtr condition = parse_expression(plan.at("condition"));
@@ -47,7 +47,7 @@ nlohmann::json execute_filter(const nlohmann::json &plan)
         {
             if (!column.is_string())
             {
-                throw StorageError("INVALID_PLAN", "数据集列名必须是字符串");
+                throw StorageError("INVALID_PLAN", "Result set column names must be strings");
             }
             names.push_back(column.get<std::string>());
         }
@@ -67,8 +67,7 @@ nlohmann::json execute_filter(const nlohmann::json &plan)
             {"success", true},
             {"type", "resultset"},
             {"columns", columns},
-            {"rows", std::move(filtered)}
-        };
+            {"rows", std::move(filtered)}};
     }
     catch (const StorageError &e)
     {

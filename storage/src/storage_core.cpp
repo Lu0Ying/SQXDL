@@ -99,7 +99,7 @@ int main()
             result = {
                 {"success", false},
                 {"type", "error"},
-                {"error", {{"code", "INVALID_PLAN"}, {"message", "物理计划结构非法"}}}};
+                {"error", {{"code", "INVALID_PLAN"}, {"message", "Invalid physical plan structure"}}}};
         }
         catch (const StorageError &e)
         {
@@ -120,7 +120,7 @@ int main()
             result = {
                 {"success", false},
                 {"type", "error"},
-                {"error", {{"code", "INTERNAL_ERROR"}, {"message", "未知错误"}}}};
+                {"error", {{"code", "INTERNAL_ERROR"}, {"message", "Unknown error"}}}};
         }
 
         std::cout << result.dump() << std::endl;

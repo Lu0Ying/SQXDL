@@ -18,13 +18,13 @@ nlohmann::json execute_update(const nlohmann::json &plan)
         if (!plan.contains("table") || !plan.at("table").is_string() ||
             plan.at("table").get<std::string>().empty())
         {
-            throw StorageError("INVALID_PLAN", "缺少或非法的字符串字段 table");
+            throw StorageError("INVALID_PLAN", "Missing or invalid string field: table");
         }
         Table &table = Database::instance().get_table(plan.at("table").get<std::string>());
 
         if (!plan.contains("set") || !plan.at("set").is_object() || plan.at("set").empty())
         {
-            throw StorageError("INVALID_PLAN", "update 缺少非空的 set 对象");
+            throw StorageError("INVALID_PLAN", "update is missing a non-empty set object");
         }
         // 先校验列存在并解析新值，避免逐行更新中途失败产生部分更新
         std::vector<std::pair<size_t, Value>> assignments;
