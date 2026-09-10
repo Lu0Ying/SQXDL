@@ -36,7 +36,7 @@ public class ParserDemo {
         System.out.println("演示结束");
     }
 
-    /** 逐个取 Token 并打印：序号、类别、原文、行列，KEYWORD 额外标注 */
+    /** 逐个取 Token 并打印：序号、类别、原文、行列，KEYWORD 额外标注；末尾统一输出拼写提示（仅一次） */
     private static void printTokens(String sql) {
         System.out.println("\n--- Token 流 ---");
         Lexer lexer = new Lexer(sql);
@@ -49,6 +49,10 @@ public class ParserDemo {
             String isKw = t.getType() == Token.Type.KEYWORD ? "  [KEYWORD]" : "";
             System.out.printf("[%d] %-10s '%s'  @%d:%d%s%n",
                     i++, t.getType(), t.getLexeme(), t.getLine(), t.getCol(), isKw);
+        }
+        // 拼写提示从该 Lexer 一次性取回打印；AST 解析用的 Lexer 不再重复输出
+        for (String w : lexer.getSpellWarnings()) {
+            System.out.println(w);
         }
     }
 
@@ -109,6 +113,15 @@ public class ParserDemo {
             for (ASTNode.CreateTableStmt.ColumnDef col : c.getColumns()) {
                 System.out.println(indent + "    " + col.getName() + " " + col.getType());
             }
+        } else if (node instanceof ASTNode.ShowStmt s) {
+            System.out.println(indent + "ShowStmt");
+            System.out.println(indent + "  target : " + s.getTarget());
+            if (s.getTableName() != null) {
+                System.out.println(indent + "  table  : " + s.getTableName());
+            }
+        } else if (node instanceof ASTNode.DropTableStmt d) {
+            System.out.println(indent + "DropTableStmt");
+            System.out.println(indent + "  table : " + d.getTableName());
         } else {
             // 兜底：直接打印 toString
             System.out.println(indent + node);

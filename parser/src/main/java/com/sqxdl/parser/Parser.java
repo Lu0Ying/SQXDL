@@ -45,7 +45,7 @@ public class Parser {
     /**
      * 解析完整 SQL 语句，按首关键字分发到对应语句的解析方法。
      *
-     * @return 语法树根节点（SelectStmt / InsertStmt / UpdateStmt / DeleteStmt / CreateTableStmt）
+     * @return 语法树根节点（SelectStmt / InsertStmt / UpdateStmt / DeleteStmt / CreateTableStmt / ShowStmt）
      */
     public ASTNode parse() {
         Token t = peek();
@@ -66,11 +66,17 @@ public class Parser {
                 case "CREATE" -> {
                     return parseCreateTable();
                 }
+                case "SHOW" -> {
+                    return parseShow();
+                }
+                case "DROP" -> {
+                    return parseDropTable();
+                }
                 default -> {
                 }
             }
         }
-        throw syntaxError(t, "SELECT | INSERT | UPDATE | DELETE | CREATE");
+        throw syntaxError(t, "SELECT | INSERT | UPDATE | DELETE | CREATE | SHOW | DROP");
     }
 
     /**
@@ -84,7 +90,7 @@ public class Parser {
         Token t = peek();
         boolean nextStatement = t.getType() == Token.Type.KEYWORD;
         if (t.getType() != Token.Type.EOF && !nextStatement) {
-            throw syntaxError(t, "';' | EOF | SELECT | INSERT | UPDATE | DELETE | CREATE");
+            throw syntaxError(t, "';' | EOF | SELECT | INSERT | UPDATE | DELETE | CREATE | SHOW | DROP");
         }
     }
 
@@ -144,6 +150,44 @@ public class Parser {
         finishStatement();
         return new ASTNode.SelectStmt(start.getLine(), start.getCol(),
                 table.getLexeme(), columns, whereCond);
+    }
+
+    /**
+     * 解析 SHOW 语句：SHOW TABLES | SHOW TABLE tableName。
+     * SHOW TABLES 用于列出全部表；SHOW TABLE name 用于查看指定表结构。
+     *
+     * @return ShowStmt 节点（tableName 仅在 target 为 TABLE 时有值）
+     */
+    private ASTNode parseShow() {
+        Token start = expectKeyword("SHOW");
+        Token target = peek();
+        if (target.getType() != Token.Type.KEYWORD
+                || !("TABLE".equalsIgnoreCase(target.getLexeme())
+                || "TABLES".equalsIgnoreCase(target.getLexeme()))) {
+            throw syntaxError(target, "TABLE | TABLES");
+        }
+        advance();
+        String tableName = null;
+        if ("TABLE".equalsIgnoreCase(target.getLexeme())) {
+            tableName = expect(Token.Type.IDENTIFIER).getLexeme();
+        }
+        finishStatement();
+        return new ASTNode.ShowStmt(start.getLine(), start.getCol(),
+                target.getLexeme().toUpperCase(), tableName);
+    }
+
+    /**
+     * 解析 DROP TABLE 语句：DROP TABLE tableName。
+     * 与 CREATE TABLE 对称，语义层据此删除表及其数据。
+     *
+     * @return DropTableStmt 节点
+     */
+    private ASTNode parseDropTable() {
+        Token start = expectKeyword("DROP");
+        expectKeyword("TABLE");
+        Token table = expect(Token.Type.IDENTIFIER);
+        finishStatement();
+        return new ASTNode.DropTableStmt(start.getLine(), start.getCol(), table.getLexeme());
     }
 
     /**

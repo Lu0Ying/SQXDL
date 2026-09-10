@@ -355,24 +355,41 @@ public abstract class ASTNode {
     }
 
     /**
-     * SHOW TABLES 语句节点，对应语法：SHOW TABLES
-     * 列出当前数据库中的所有表。
+     * SHOW 语句节点，对应语法：SHOW TABLES | SHOW TABLE tableName。
+     * target 为 "TABLES" 或 "TABLE"；target 为 "TABLE" 时 tableName 为表名，否则为 null。
      */
-    public static class ShowTablesStmt extends ASTNode {
+    public static class ShowStmt extends ASTNode {
 
-        public ShowTablesStmt(int line, int col) {
+        /** SHOW 的目标：TABLES（列全部表）或 TABLE（查看指定表） */
+        private final String target;
+        /** SHOW TABLE 时指定表名；SHOW TABLES 时为 null */
+        private final String tableName;
+
+        public ShowStmt(int line, int col, String target, String tableName) {
             super(line, col);
+            this.target = target;
+            this.tableName = tableName;
+        }
+
+        public String getTarget() {
+            return target;
+        }
+
+        public String getTableName() {
+            return tableName;
         }
 
         @Override
         public String toString() {
-            return "ShowTablesStmt{}";
+            return tableName == null
+                    ? "ShowStmt{target=TABLES}"
+                    : "ShowStmt{target=TABLE, table=" + tableName + "}";
         }
     }
 
     /**
-     * DROP TABLE 语句节点，对应语法：DROP TABLE tableName
-     * 删除指定表及其数据。
+     * DROP TABLE 语句节点，对应语法：DROP TABLE tableName。
+     * 语义层据此删除指定表及其数据。
      */
     public static class DropTableStmt extends ASTNode {
 
