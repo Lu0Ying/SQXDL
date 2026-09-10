@@ -119,6 +119,9 @@ public class ParserDemo {
             if (s.getTableName() != null) {
                 System.out.println(indent + "  table  : " + s.getTableName());
             }
+        } else if (node instanceof ASTNode.DropTableStmt d) {
+            System.out.println(indent + "DropTableStmt");
+            System.out.println(indent + "  table : " + d.getTableName());
         } else {
             // 兜底：直接打印 toString
             System.out.println(indent + node);
