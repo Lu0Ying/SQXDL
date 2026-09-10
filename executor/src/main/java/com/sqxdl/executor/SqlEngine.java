@@ -429,9 +429,16 @@ public class SqlEngine implements AutoCloseable {
     private List<CatalogImpl.ColumnInfo> toColumnInfos(List<ASTNode.CreateTableStmt.ColumnDef> defs) {
         List<CatalogImpl.ColumnInfo> infos = new ArrayList<>();
         for (ASTNode.CreateTableStmt.ColumnDef def : defs) {
-            CatalogImpl.DataType type = "INT".equalsIgnoreCase(def.getType())
-                    ? CatalogImpl.DataType.INT
-                    : CatalogImpl.DataType.VARCHAR;
+            CatalogImpl.DataType type;
+            if ("INT".equalsIgnoreCase(def.getType())) {
+                type = CatalogImpl.DataType.INT;
+            } else if ("DOUBLE".equalsIgnoreCase(def.getType())) {
+                type = CatalogImpl.DataType.DOUBLE;
+            } else if ("BOOLEAN".equalsIgnoreCase(def.getType())) {
+                type = CatalogImpl.DataType.BOOLEAN;
+            } else {
+                type = CatalogImpl.DataType.VARCHAR;
+            }
             infos.add(new CatalogImpl.ColumnInfo(def.getName(), type));
         }
         return infos;

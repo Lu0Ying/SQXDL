@@ -81,10 +81,13 @@ public class PlanGenerator {
         throw new IllegalArgumentException("不支持的语句类型: " + ast.getClass().getSimpleName());
     }
 
-    /** 建表类型字符串 -> 数据字典类型（INT/BOOLEAN 之外的类型按 VARCHAR 处理） */
+    /** 建表类型字符串 -> 数据字典类型（INT/DOUBLE/BOOLEAN 之外的类型按 VARCHAR 处理） */
     private CatalogImpl.DataType toDataType(String typeName) {
         if ("INT".equalsIgnoreCase(typeName)) {
             return CatalogImpl.DataType.INT;
+        }
+        if ("DOUBLE".equalsIgnoreCase(typeName)) {
+            return CatalogImpl.DataType.DOUBLE;
         }
         if ("BOOLEAN".equalsIgnoreCase(typeName)) {
             return CatalogImpl.DataType.BOOLEAN;

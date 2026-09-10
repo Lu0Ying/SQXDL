@@ -320,21 +320,22 @@ public class Parser {
                 table.getLexeme(), columns);
     }
 
-    /** 解析列定义：IDENTIFIER type（type -> INT | VARCHAR），类型统一存大写 */
+    /** 解析列定义：IDENTIFIER type（type -> INT | VARCHAR | DOUBLE），类型统一存大写 */
     private ASTNode.CreateTableStmt.ColumnDef parseColumnDef() {
         Token name = expect(Token.Type.IDENTIFIER);
         Token type = expectType();
         return new ASTNode.CreateTableStmt.ColumnDef(name.getLexeme(), type.getLexeme().toUpperCase());
     }
 
-    /** 断言当前 Token 为列类型关键字 INT 或 VARCHAR，符合则消费并返回 */
+    /** 断言当前 Token 为列类型关键字 INT/VARCHAR/DOUBLE，符合则消费并返回 */
     private Token expectType() {
         if (current.getType() == Token.Type.KEYWORD
                 && ("INT".equalsIgnoreCase(current.getLexeme())
-                || "VARCHAR".equalsIgnoreCase(current.getLexeme()))) {
+                || "VARCHAR".equalsIgnoreCase(current.getLexeme())
+                || "DOUBLE".equalsIgnoreCase(current.getLexeme()))) {
             return advance();
         }
-        throw syntaxError(current, "INT | VARCHAR");
+        throw syntaxError(current, "INT | VARCHAR | DOUBLE");
     }
 
     /**

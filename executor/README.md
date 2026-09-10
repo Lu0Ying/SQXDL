@@ -117,21 +117,26 @@ SwingDemo (GUI) ─────────┘                     │
 ## 4. 支持的 SQL 输入
 
 ```sql
-CREATE TABLE student (id INT, name VARCHAR)              -- 建表（INT/VARCHAR）
-INSERT INTO student VALUES (1, 'Alice')                  -- 插入
+CREATE TABLE student (id INT, name VARCHAR, gpa DOUBLE)   -- 建表（INT/VARCHAR/DOUBLE）
+INSERT INTO student VALUES (1, 'Alice', 92.5)             -- 插入
 SELECT * FROM student                                    -- 全表查询
-SELECT name, age FROM student WHERE age > 20             -- 投影 + 条件
-SELECT * FROM student WHERE NOT age > 20 AND id < 5      -- 逻辑组合（&&/|| 等价）
-SELECT * FROM student WHERE age + 1 > 21                 -- 条件内算术
-UPDATE student SET name = 'Bob', age = 22 WHERE id = 1   -- 更新（可省 WHERE）
-DELETE FROM student WHERE id = 2                         -- 删除（可省 WHERE）
+SELECT name, gpa FROM student WHERE gpa > 90              -- 投影 + 条件
+SELECT * FROM student WHERE NOT age > 20 AND id < 5       -- 逻辑组合（&&/|| 等价）
+SELECT * FROM student WHERE gpa + 1 > 90                  -- 条件内算术*
+UPDATE student SET gpa = 95.0 WHERE id = 1                -- 更新（可省 WHERE，SET 值须为常量）
+DELETE FROM student WHERE id = 2                          -- 删除（可省 WHERE）
+SHOW TABLES                                              -- 列出全部表
+SHOW TABLE student                                       -- 查看表结构（列名 + 类型）
+DROP TABLE student                                       -- 删表（同时清理目录与数据）
 ```
 
 - `exit` 退出（不区分大小写），结尾分号可选，空行跳过；
 - 拼写相近的关键字给出纠错提示（如 `SELEC` → `SELECT`）；
-- 执行前自动做语义校验：表/列存在性、INSERT 值个数、值类型与列类型兼容性；
-- `SHOW TABLES` / `DROP TABLE` 的语义、计划、序列化与模拟执行均已就绪，
-  待 A 组 Parser 开放语法入口后即可使用。
+- 执行前自动做语义校验：表/列存在性、INSERT 值个数、值类型与列类型兼容性
+  （INT 与 DOUBLE 数值互通，字符串不能进数值列）。
+
+\* 条件内算术是否可用取决于存储核心版本：部分版本的存储核心未实现条件表达式中的
+算术运算（返回 `INVALID_PLAN`），Java 侧序列化与模拟层均支持。
 
 ---
 
