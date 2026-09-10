@@ -169,10 +169,11 @@ class LexerTest {
 
     @Test
     void distantMisspellingIsNotCorrected() {
-        // "abc" 与所有关键字编辑距离都大于 1，应保持为普通标识符
-        List<Token> ts = tokenize("abc id FROM t");
+        // "xyz" 与所有关键字编辑距离都大于 1，应保持为普通标识符
+        // （注意：短标识符 a/b/c 由于长度下限保护也不会被误纠正）
+        List<Token> ts = tokenize("xyz id FROM t");
         assertEquals(Token.Type.IDENTIFIER, ts.get(0).getType());
-        assertEquals("abc", ts.get(0).getLexeme());
+        assertEquals("xyz", ts.get(0).getLexeme());
     }
 
     @Test

@@ -134,7 +134,11 @@ public class Parser {
     }
 
     /**
-     * 解析 SELECT 语句：SELECT 列清单 FROM 表名 [WHERE 条件] [;]
+     * 解析 SELECT 语句：
+     * SELECT 列清单 FROM 表名 { JOIN 表名 ON 条件 }
+     *   [WHERE 条件] [GROUP BY 列清单] [ORDER BY 排序项清单]
+     * JOIN 条件与 WHERE 条件都经编译期优化（常量折叠 / 逻辑简化），且分离存储，
+     * 语义层可据此做跨表谓词下推。
      *
      * @return SelectStmt 节点
      */
@@ -143,13 +147,92 @@ public class Parser {
         List<String> columns = parseSelectList();
         expectKeyword("FROM");
         Token table = expect(Token.Type.IDENTIFIER);
+        // JOIN 子句（可链式）：t1 JOIN t2 ON 条件 [JOIN t3 ON 条件 ...]
+        List<ASTNode.SelectStmt.JoinClause> joins = new ArrayList<>();
+        while (peek().getType() == Token.Type.KEYWORD
+                && peek().getLexeme().equalsIgnoreCase("JOIN")) {
+            joins.add(parseJoinClause());
+        }
         ASTNode whereCond = null;
         if (peek().getType() == Token.Type.KEYWORD && peek().getLexeme().equalsIgnoreCase("WHERE")) {
             whereCond = parseWhere();
         }
+        List<String> groupBy = new ArrayList<>();
+        if (peek().getType() == Token.Type.KEYWORD && peek().getLexeme().equalsIgnoreCase("GROUP")) {
+            groupBy = parseGroupBy();
+        }
+        List<ASTNode.SelectStmt.OrderItem> orderBy = new ArrayList<>();
+        if (peek().getType() == Token.Type.KEYWORD && peek().getLexeme().equalsIgnoreCase("ORDER")) {
+            orderBy = parseOrderBy();
+        }
         finishStatement();
         return new ASTNode.SelectStmt(start.getLine(), start.getCol(),
-                table.getLexeme(), columns, whereCond);
+                table.getLexeme(), columns, whereCond, joins, groupBy, orderBy);
+    }
+
+    /**
+     * 解析 JOIN 子句：JOIN 表名 ON 表达式。
+     * ON 条件参与编译期优化（fold），与 WHERE 分离存储，便于语义层谓词下推。
+     *
+     * @return 连接子句（表名 + ON 条件）
+     */
+    private ASTNode.SelectStmt.JoinClause parseJoinClause() {
+        expectKeyword("JOIN");
+        Token table = expect(Token.Type.IDENTIFIER);
+        expectKeyword("ON");
+        ASTNode onCond = fold(parseExpr());
+        return new ASTNode.SelectStmt.JoinClause(table.getLexeme(), onCond);
+    }
+
+    /**
+     * 解析 GROUP BY 子句：GROUP BY 列名 {, 列名}。
+     *
+     * @return 分组列名列表
+     */
+    private List<String> parseGroupBy() {
+        expectKeyword("GROUP");
+        expectKeyword("BY");
+        List<String> columns = new ArrayList<>();
+        columns.add(expect(Token.Type.IDENTIFIER).getLexeme());
+        while (peek().getType() == Token.Type.DELIMITER && ",".equals(peek().getLexeme())) {
+            advance();
+            columns.add(expect(Token.Type.IDENTIFIER).getLexeme());
+        }
+        return columns;
+    }
+
+    /**
+     * 解析 ORDER BY 子句：ORDER BY 列名 [ASC | DESC] {, 列名 [ASC | DESC]}。
+     * 未显式写方向时按 ASC 处理。
+     *
+     * @return 排序项列表（按书写顺序）
+     */
+    private List<ASTNode.SelectStmt.OrderItem> parseOrderBy() {
+        expectKeyword("ORDER");
+        expectKeyword("BY");
+        List<ASTNode.SelectStmt.OrderItem> items = new ArrayList<>();
+        items.add(parseOrderItem());
+        while (peek().getType() == Token.Type.DELIMITER && ",".equals(peek().getLexeme())) {
+            advance();
+            items.add(parseOrderItem());
+        }
+        return items;
+    }
+
+    /** 解析单个排序项：列名 [ASC | DESC] */
+    private ASTNode.SelectStmt.OrderItem parseOrderItem() {
+        Token column = expect(Token.Type.IDENTIFIER);
+        String direction = "ASC";
+        if (peek().getType() == Token.Type.KEYWORD) {
+            if (peek().getLexeme().equalsIgnoreCase("ASC")) {
+                advance();
+                direction = "ASC";
+            } else if (peek().getLexeme().equalsIgnoreCase("DESC")) {
+                advance();
+                direction = "DESC";
+            }
+        }
+        return new ASTNode.SelectStmt.OrderItem(column.getLexeme(), direction);
     }
 
     /**

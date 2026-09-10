@@ -2,6 +2,7 @@ package com.sqxdl.parser;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -32,6 +33,18 @@ class ParserTest {
     /** 多语句解析：出错时记入 getErrors() 并恢复继续 */
     private List<ASTNode> parseAll(String sql) {
         return new Parser(new Lexer(sql)).parseAll();
+    }
+
+    /** 整条 SQL 切词，末尾含 EOF Token */
+    private List<Token> tokenize(String sql) {
+        Lexer lexer = new Lexer(sql);
+        List<Token> tokens = new ArrayList<>();
+        Token t;
+        do {
+            t = lexer.nextToken();
+            tokens.add(t);
+        } while (t.getType() != Token.Type.EOF);
+        return tokens;
     }
 
     @Test
@@ -635,5 +648,130 @@ class ParserTest {
         SqxdlException e = assertThrows(SqxdlException.class, () -> parse("DROP TABLE;"));
         assertTrue(e.getMessage().contains("unexpected token ';'"), "应报 unexpected token");
         assertTrue(e.getMessage().contains("IDENTIFIER"), "应给出期望 IDENTIFIER");
+    }
+
+    // ========== JOIN / GROUP BY / ORDER BY 扩展（可选扩展 3） ==========
+
+    @Test
+    void selectJoinProducesJoinClause() {
+        // JOIN：t1 JOIN t2 ON 条件 → SelectStmt.joins 含一个 JoinClause；
+        // 点限定列名 t1.id 整体作为标识符，ON 条件分离存储（谓词下推的结构基础）
+        ASTNode.SelectStmt stmt = (ASTNode.SelectStmt) parse(
+                "SELECT * FROM t1 JOIN t2 ON t1.id = t2.id");
+        assertEquals("t1", stmt.getTableName(), "主表应为 t1");
+        assertEquals(1, stmt.getJoins().size());
+        ASTNode.SelectStmt.JoinClause join = stmt.getJoins().get(0);
+        assertEquals("t2", join.getTableName(), "JOIN 表应为 t2");
+        ASTNode.BinaryExpr on = (ASTNode.BinaryExpr) join.getOnCond();
+        assertEquals("=", on.getOp());
+        assertEquals("t1.id", ((ASTNode.IdentifierExpr) on.getLeft()).getName());
+        assertEquals("t2.id", ((ASTNode.IdentifierExpr) on.getRight()).getName());
+    }
+
+    @Test
+    void selectChainedJoins() {
+        // 链式 JOIN：t1 JOIN t2 ON ... JOIN t3 ON ... 依次入列，顺序保留
+        ASTNode.SelectStmt stmt = (ASTNode.SelectStmt) parse(
+                "SELECT a FROM t1 JOIN t2 ON t1.id = t2.id JOIN t3 ON t2.id = t3.id WHERE a > 1");
+        assertEquals(2, stmt.getJoins().size());
+        assertEquals("t2", stmt.getJoins().get(0).getTableName());
+        assertEquals("t3", stmt.getJoins().get(1).getTableName());
+        // JOIN 与 WHERE 同时存在，且都经编译期优化
+        assertEquals(">", ((ASTNode.BinaryExpr) stmt.getWhereCond()).getOp());
+    }
+
+    @Test
+    void joinOnConditionFolded() {
+        // ON 条件参与常量折叠：t1.id = 1 + 1 → t1.id = 2
+        ASTNode.SelectStmt stmt = (ASTNode.SelectStmt) parse(
+                "SELECT * FROM t1 JOIN t2 ON t1.id = 1 + 1");
+        ASTNode.LiteralExpr right = (ASTNode.LiteralExpr)
+                ((ASTNode.BinaryExpr) stmt.getJoins().get(0).getOnCond()).getRight();
+        assertEquals("2", right.getValue(), "ON 条件中的常量应折叠");
+    }
+
+    @Test
+    void selectJoinMissingOnThrows() {
+        // JOIN 后必须跟 ON 与条件：缺 ON 时报 unexpected token，期望 ON
+        SqxdlException e = assertThrows(SqxdlException.class, () -> parse(
+                "SELECT * FROM t1 JOIN t2 WHERE a = 1"));
+        assertTrue(e.getMessage().contains("unexpected token 'WHERE'"), "应报 unexpected token");
+        assertTrue(e.getMessage().contains("ON"), "应给出期望 ON");
+    }
+
+    @Test
+    void selectGroupBy() {
+        // GROUP BY：列名列表按书写顺序存储
+        ASTNode.SelectStmt stmt = (ASTNode.SelectStmt) parse(
+                "SELECT dept, count FROM t GROUP BY dept");
+        assertEquals(List.of("dept"), stmt.getGroupBy());
+    }
+
+    @Test
+    void selectGroupByMultipleColumns() {
+        // GROUP BY 多列：dept, city
+        ASTNode.SelectStmt stmt = (ASTNode.SelectStmt) parse(
+                "SELECT * FROM t WHERE a = 1 GROUP BY dept, city");
+        assertEquals(List.of("dept", "city"), stmt.getGroupBy());
+        assertTrue(stmt.getWhereCond() != null, "GROUP BY 前的 WHERE 应保留");
+    }
+
+    @Test
+    void selectOrderBy() {
+        // ORDER BY：缺省方向为 ASC
+        ASTNode.SelectStmt stmt = (ASTNode.SelectStmt) parse("SELECT * FROM t ORDER BY id");
+        assertEquals(1, stmt.getOrderBy().size());
+        assertEquals("id", stmt.getOrderBy().get(0).getColumn());
+        assertEquals("ASC", stmt.getOrderBy().get(0).getDirection(), "缺省方向应为 ASC");
+    }
+
+    @Test
+    void selectOrderByWithDescAndMultipleColumns() {
+        // ORDER BY 多列 + 显式方向：id DESC, name ASC，书写顺序保留
+        ASTNode.SelectStmt stmt = (ASTNode.SelectStmt) parse(
+                "SELECT * FROM t ORDER BY id DESC, name ASC");
+        assertEquals(2, stmt.getOrderBy().size());
+        assertEquals("DESC", stmt.getOrderBy().get(0).getDirection());
+        assertEquals("name", stmt.getOrderBy().get(1).getColumn());
+        assertEquals("ASC", stmt.getOrderBy().get(1).getDirection());
+    }
+
+    @Test
+    void selectGroupByOrderByCombined() {
+        // GROUP BY + ORDER BY + WHERE + JOIN 组合：全部子句共存
+        ASTNode.SelectStmt stmt = (ASTNode.SelectStmt) parse(
+                "SELECT dept FROM t1 JOIN t2 ON t1.id = t2.id "
+                        + "WHERE age > 18 GROUP BY dept ORDER BY dept DESC");
+        assertEquals(1, stmt.getJoins().size());
+        assertTrue(stmt.getWhereCond() != null);
+        assertEquals(List.of("dept"), stmt.getGroupBy());
+        assertEquals("dept", stmt.getOrderBy().get(0).getColumn());
+        assertEquals("DESC", stmt.getOrderBy().get(0).getDirection());
+    }
+
+    @Test
+    void selectGroupByMissingColumnThrows() {
+        // GROUP BY 后缺列名：报 unexpected token，期望 IDENTIFIER
+        SqxdlException e = assertThrows(SqxdlException.class, () -> parse(
+                "SELECT * FROM t GROUP BY;"));
+        assertTrue(e.getMessage().contains("unexpected token ';'"), "应报 unexpected token");
+        assertTrue(e.getMessage().contains("IDENTIFIER"), "应给出期望 IDENTIFIER");
+    }
+
+    @Test
+    void selectOrderByMissingColumnThrows() {
+        // ORDER BY 后缺列名：报 unexpected token，期望 IDENTIFIER
+        SqxdlException e = assertThrows(SqxdlException.class, () -> parse(
+                "SELECT * FROM t ORDER BY;"));
+        assertTrue(e.getMessage().contains("unexpected token ';'"), "应报 unexpected token");
+        assertTrue(e.getMessage().contains("IDENTIFIER"), "应给出期望 IDENTIFIER");
+    }
+
+    @Test
+    void qualifiedColumnIdentifier() {
+        // 词法：表名.列名 整体作为一个 IDENTIFIER（JOIN 场景基础）
+        List<Token> ts = tokenize("t1.id");
+        assertEquals(Token.Type.IDENTIFIER, ts.get(0).getType());
+        assertEquals("t1.id", ts.get(0).getLexeme());
     }
 }

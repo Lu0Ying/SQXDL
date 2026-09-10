@@ -9,10 +9,10 @@ Parser 采用**递归下降**方案实现，每个非终结符对应一个解析
 
 | 终结符 | 含义 | 词法示例 |
 |---|---|---|
-| `IDENTIFIER` | 标识符（表名 / 列名） | `student`、`id`、`my_table` |
+| `IDENTIFIER` | 标识符（表名 / 列名）；支持点限定（`表名.列名`） | `student`、`id`、`t1.id` |
 | `CONST` | 常量（数字 / 字符串字面量） | `18`、`'Tom'` |
 | `INT` / `VARCHAR` | 列类型关键字 | `INT`、`varchar` |
-| 关键字 | `SELECT` `FROM` `WHERE` `CREATE` `TABLE` `TABLES` `INSERT` `INTO` `VALUES` `DELETE` `UPDATE` `SET` `AND` `OR` `NOT` `TRUE` `FALSE` `SHOW` `DROP` `DESCRIBE` `DESC` | 不区分大小写 |
+| 关键字 | `SELECT` `FROM` `WHERE` `CREATE` `TABLE` `TABLES` `INSERT` `INTO` `VALUES` `DELETE` `UPDATE` `SET` `AND` `OR` `NOT` `TRUE` `FALSE` `SHOW` `DROP` `DESCRIBE` `DESC` `JOIN` `ON` `GROUP` `BY` `ORDER` `ASC` | 不区分大小写 |
 | 运算符 | `=` `<` `>` `<=` `>=` `!=` `==` `+` `-` `*` `/` `&&` `\|\|` | `>=`、`&&` |
 | 分隔符 | `(` `)` `,` `;` | |
 | `EOF` | 输入结束 | |
@@ -66,7 +66,8 @@ literal        -> CONST | TRUE | FALSE
 
 > 与课程示例文法的关系：`select_stmt`、`select_list`、`where_opt`、`delete_stmt`、`create_stmt`、`column_def`、`type`、`insert_stmt` 与课程文法逐条对应。
 > `expression → or_expr`、`or_expr → and_expr { OR and_expr }`、`and_expr → not_expr { AND not_expr }`、`not_expr → NOT not_expr | comparison`、`comparison → primary [ comp_op primary ]`、`primary → IDENTIFIER | CONST | '(' expression ')'` 亦与课程文法一致。
-> 超集部分：`comparison` 的操作数改为 `additive`（`* /` 优先级高于 `+ -`，支持常量折叠 `1+2 → 3`）；`update_stmt`、`show_stmt`、`drop_table_stmt` 为课程文法之外的能力扩展。
+> 超集部分：`comparison` 的操作数改为 `additive`（`* /` 优先级高于 `+ -`，支持常量折叠 `1+2 → 3`）；`update_stmt`、`show_stmt`（含 `DESCRIBE`/`DESC` 等价写法）、`drop_table_stmt` 为课程文法之外的能力扩展；
+> `join_clause`、`group_by_opt`、`order_by_opt` 为可选扩展 3 的语法扩展（多表 JOIN、GROUP BY、ORDER BY）。
 
 ### 运算符优先级（低 → 高）
 
@@ -107,7 +108,8 @@ or_expr -> and_expr { OR and_expr }
 
 1. 该文法规模小、无左公因子冲突，递归下降代码直观且与文法一一对应，便于维护；
 2. 每个非终结符对应一个解析函数（`parseCreateTable`、`parseSelect`、`parseInsert`、`parseUpdate`、
-   `parseDelete`、`parseShow`、`parseDropTable`、`parseWhere`、`parseExpr`、`parseOr`、`parseAnd`、`parseNot`、`parseComparison`、
+   `parseDelete`、`parseShow`、`parseDropTable`、`parseJoinClause`、`parseGroupBy`、`parseOrderBy`、`parseOrderItem`、
+   `parseWhere`、`parseExpr`、`parseOr`、`parseAnd`、`parseNot`、`parseComparison`、
    `parseAdditive`、`parseMultiplicative`、`parseOperand`、`parseSelectList`、`parseColumnDef` 等）；
 3. 单 Token 向前看（`peek()` / `advance()`）即可完成所有分支决策，等价于利用各非终结符的 **FIRST 集** 判断；
 4. 具备错误恢复能力：`parseAll()` 捕获 `SqxdlException` 后跳过到下一个 `;`（或 EOF）继续解析。
@@ -119,18 +121,23 @@ or_expr -> and_expr { OR and_expr }
 
 | 非终结符 | FIRST 集 | 分支依据（对应解析函数） |
 |---|---|---|
-| `statement` | `CREATE` `INSERT` `SELECT` `UPDATE` `DELETE` `SHOW` `DROP` | `parse()` 按首关键字 switch |
+| `statement` | `CREATE` `INSERT` `SELECT` `UPDATE` `DELETE` `SHOW` `DESCRIBE` `DESC` `DROP` | `parse()` 按首关键字 switch |
 | `create_stmt` | `CREATE` | |
 | `insert_stmt` | `INSERT` | |
 | `select_stmt` | `SELECT` | |
 | `update_stmt` | `UPDATE` | |
 | `delete_stmt` | `DELETE` | |
-| `show_stmt` | `SHOW` | `parseShow` 后按 `TABLE`/`TABLES` 分支 |
+| `show_stmt` | `SHOW` `DESCRIBE` `DESC` | `parseShow`：`SHOW` 后按 `TABLE`/`TABLES` 分支，`DESCRIBE`/`DESC` 归一化为 `TABLE` |
 | `drop_table_stmt` | `DROP` | `parseDropTable` |
 | `column_def` | `IDENTIFIER` | `parseColumnDef` |
 | `type` | `INT` `VARCHAR` | `expectType` |
 | `id_list` / `select_list` | `*` `IDENTIFIER` | `parseSelectList` |
 | `where_opt` | `WHERE` ∪ **{ε}** | `parseWhere` 前先 `peek()` 判断 |
+| `join_clause` | `JOIN` | `parseJoinClause`（`JOIN` 后循环判断） |
+| `group_by_opt` | `GROUP` ∪ **{ε}** | `parseSelect` 内 `peek()` 判断 |
+| `order_by_opt` | `ORDER` ∪ **{ε}** | `parseSelect` 内 `peek()` 判断 |
+| `order_list` | `IDENTIFIER` | `parseOrderBy` |
+| `order_item` | `IDENTIFIER` | `parseOrderItem`（后可选 `ASC`/`DESC`） |
 | `expression` / `or_expr` | `IDENTIFIER` `CONST` `(` `NOT` | |
 | `and_expr` | 同上 | |
 | `not_expr` | `NOT` `IDENTIFIER` `CONST` `(` | `parseNot` 先判断 `NOT` |
@@ -170,6 +177,8 @@ WHERE age > 18 AND;
 | 语句分发（`parse`） | `SELECT | INSERT | UPDATE | DELETE | CREATE | SHOW | DROP | DESCRIBE | DESC` |
 | 语句收尾（`finishStatement`） | `';' | EOF | SELECT | INSERT | UPDATE | DELETE | CREATE | SHOW | DROP | DESCRIBE | DESC` |
 | SHOW 目标（`parseShow`） | `TABLE | TABLES` |
+| JOIN 连接子句（`parseJoinClause`） | JOIN 后跟 `IDENTIFIER`，再跟 `ON` |
+| GROUP BY / ORDER BY 列名 | `IDENTIFIER` |
 | 列类型（`expectType`） | `INT | VARCHAR` |
 | 其他关键字 / 分隔符 / 运算符 | 对应终结符本身 |
 

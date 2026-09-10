@@ -94,7 +94,8 @@ WHERE 条件表达式按优先级解析（低 → 高）：
 - 关键字不区分大小写；字符串字面量 `'Tom'` 存不带引号的 `Tom`，转义 `''` 表示单引号。
 - 支持 `-- 行注释` 与 `/* 块注释 */`。
 - 多条语句之间分号可省略；语句结束要求为 `;`、EOF 或下一条语句开头。
-- 常见拼写错误（编辑距离 = 1）自动纠正，如 `selec` → `SELECT`、`form` → `FROM`。纠错提示由 Lexer 收集（不直接打印），调用方通过 `lexer.getSpellWarnings()` 取回，格式如 `[1:1] 拼写提示：将 'selec' 纠正为 'SELECT'`。
+- 常见拼写错误（编辑距离 = 1）自动纠正，如 `selec` → `SELECT`、`form` → `FROM`。纠错提示由 Lexer 收集（不直接打印），调用方通过 `lexer.getSpellWarnings()` 取回，格式如 `[1:1] 拼写提示：将 'selec' 纠正为 'SELECT'`。**长度小于 2 的标识符不参与纠错**（保护单字母列名 `a`/`b`/`c` 不被短关键字 `BY`/`ON` 误判）。
+- JOIN 的 ON 条件支持**点限定列名**（`t1.id`、`stu.name`）：词法层把 `表名.列名` 整体识别为一个 IDENTIFIER，语义层按 `.` 拆分表名与列名。
 
 ## 输出契约（AST 节点一览）
 
@@ -168,4 +169,4 @@ Parser 在构建 WHERE 表达式树后立即做两层优化（后序遍历）：
 mvn -pl parser test
 ```
 
-`LexerTest`（23 例）覆盖五类 Token、注释、转义、行列号、拼写纠错与非法输入；`ParserTest`（65 例）覆盖七类语句（含 SHOW/DESCRIBE/DESC、DROP TABLE）、表达式优先级（含课程示例 `a = 1 OR b = 2 AND c = 3`）、NOT/括号、列类型、常量折叠、逻辑简化、错误格式（`unexpected token` + 期望终结符列表）、错误恢复与多语句输入；`EdgeCaseTest`（22 例）集中覆盖词法、拼写纠错、表达式、SHOW/DROP 边界与错误恢复临界场景。共 110 例。
+`LexerTest`（23 例）覆盖五类 Token、注释、转义、行列号、拼写纠错与非法输入；`ParserTest`（77 例）覆盖语句解析（含 SHOW/DESCRIBE/DESC、DROP TABLE、JOIN、GROUP BY、ORDER BY）、表达式优先级（含课程示例 `a = 1 OR b = 2 AND c = 3`）、NOT/括号、列类型、常量折叠、逻辑简化、错误格式（`unexpected token` + 期望终结符列表）、错误恢复与多语句输入；`EdgeCaseTest`（22 例）集中覆盖词法、拼写纠错、表达式、SHOW/DROP 边界与错误恢复临界场景。共 122 例。
