@@ -178,6 +178,7 @@ public final class PhysicalPlanJson {
     private static String typeName(CatalogImpl.DataType type) {
         return switch (type) {
             case INT -> "INT";
+            case DOUBLE -> "DOUBLE";
             case BOOLEAN -> "BOOLEAN";
             default -> "VARCHAR";
         };

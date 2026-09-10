@@ -66,7 +66,7 @@ public class Parser {
                 case "CREATE" -> {
                     return parseCreateTable();
                 }
-                case "SHOW" -> {
+                case "SHOW", "DESCRIBE", "DESC" -> {
                     return parseShow();
                 }
                 case "DROP" -> {
@@ -90,7 +90,7 @@ public class Parser {
         Token t = peek();
         boolean nextStatement = t.getType() == Token.Type.KEYWORD;
         if (t.getType() != Token.Type.EOF && !nextStatement) {
-            throw syntaxError(t, "';' | EOF | SELECT | INSERT | UPDATE | DELETE | CREATE | SHOW | DROP");
+            throw syntaxError(t, "';' | EOF | SELECT | INSERT | UPDATE | DELETE | CREATE | SHOW | DROP | DESCRIBE | DESC");
         }
     }
 
@@ -134,7 +134,11 @@ public class Parser {
     }
 
     /**
-     * 解析 SELECT 语句：SELECT 列清单 FROM 表名 [WHERE 条件] [;]
+     * 解析 SELECT 语句：
+     * SELECT 列清单 FROM 表名 { JOIN 表名 ON 条件 }
+     *   [WHERE 条件] [GROUP BY 列清单] [ORDER BY 排序项清单]
+     * JOIN 条件与 WHERE 条件都经编译期优化（常量折叠 / 逻辑简化），且分离存储，
+     * 语义层可据此做跨表谓词下推。
      *
      * @return SelectStmt 节点
      */
@@ -143,23 +147,113 @@ public class Parser {
         List<String> columns = parseSelectList();
         expectKeyword("FROM");
         Token table = expect(Token.Type.IDENTIFIER);
+        // JOIN 子句（可链式）：t1 JOIN t2 ON 条件 [JOIN t3 ON 条件 ...]
+        List<ASTNode.SelectStmt.JoinClause> joins = new ArrayList<>();
+        while (peek().getType() == Token.Type.KEYWORD
+                && peek().getLexeme().equalsIgnoreCase("JOIN")) {
+            joins.add(parseJoinClause());
+        }
         ASTNode whereCond = null;
         if (peek().getType() == Token.Type.KEYWORD && peek().getLexeme().equalsIgnoreCase("WHERE")) {
             whereCond = parseWhere();
         }
+        List<String> groupBy = new ArrayList<>();
+        if (peek().getType() == Token.Type.KEYWORD && peek().getLexeme().equalsIgnoreCase("GROUP")) {
+            groupBy = parseGroupBy();
+        }
+        List<ASTNode.SelectStmt.OrderItem> orderBy = new ArrayList<>();
+        if (peek().getType() == Token.Type.KEYWORD && peek().getLexeme().equalsIgnoreCase("ORDER")) {
+            orderBy = parseOrderBy();
+        }
         finishStatement();
         return new ASTNode.SelectStmt(start.getLine(), start.getCol(),
-                table.getLexeme(), columns, whereCond);
+                table.getLexeme(), columns, whereCond, joins, groupBy, orderBy);
     }
 
     /**
-     * 解析 SHOW 语句：SHOW TABLES | SHOW TABLE tableName。
-     * SHOW TABLES 用于列出全部表；SHOW TABLE name 用于查看指定表结构。
+     * 解析 JOIN 子句：JOIN 表名 ON 表达式。
+     * ON 条件参与编译期优化（fold），与 WHERE 分离存储，便于语义层谓词下推。
+     *
+     * @return 连接子句（表名 + ON 条件）
+     */
+    private ASTNode.SelectStmt.JoinClause parseJoinClause() {
+        expectKeyword("JOIN");
+        Token table = expect(Token.Type.IDENTIFIER);
+        expectKeyword("ON");
+        ASTNode onCond = fold(parseExpr());
+        return new ASTNode.SelectStmt.JoinClause(table.getLexeme(), onCond);
+    }
+
+    /**
+     * 解析 GROUP BY 子句：GROUP BY 列名 {, 列名}。
+     *
+     * @return 分组列名列表
+     */
+    private List<String> parseGroupBy() {
+        expectKeyword("GROUP");
+        expectKeyword("BY");
+        List<String> columns = new ArrayList<>();
+        columns.add(expect(Token.Type.IDENTIFIER).getLexeme());
+        while (peek().getType() == Token.Type.DELIMITER && ",".equals(peek().getLexeme())) {
+            advance();
+            columns.add(expect(Token.Type.IDENTIFIER).getLexeme());
+        }
+        return columns;
+    }
+
+    /**
+     * 解析 ORDER BY 子句：ORDER BY 列名 [ASC | DESC] {, 列名 [ASC | DESC]}。
+     * 未显式写方向时按 ASC 处理。
+     *
+     * @return 排序项列表（按书写顺序）
+     */
+    private List<ASTNode.SelectStmt.OrderItem> parseOrderBy() {
+        expectKeyword("ORDER");
+        expectKeyword("BY");
+        List<ASTNode.SelectStmt.OrderItem> items = new ArrayList<>();
+        items.add(parseOrderItem());
+        while (peek().getType() == Token.Type.DELIMITER && ",".equals(peek().getLexeme())) {
+            advance();
+            items.add(parseOrderItem());
+        }
+        return items;
+    }
+
+    /** 解析单个排序项：列名 [ASC | DESC] */
+    private ASTNode.SelectStmt.OrderItem parseOrderItem() {
+        Token column = expect(Token.Type.IDENTIFIER);
+        String direction = "ASC";
+        if (peek().getType() == Token.Type.KEYWORD) {
+            if (peek().getLexeme().equalsIgnoreCase("ASC")) {
+                advance();
+                direction = "ASC";
+            } else if (peek().getLexeme().equalsIgnoreCase("DESC")) {
+                advance();
+                direction = "DESC";
+            }
+        }
+        return new ASTNode.SelectStmt.OrderItem(column.getLexeme(), direction);
+    }
+
+    /**
+     * 解析 SHOW / DESCRIBE / DESC 语句。
+     * <ul>
+     *   <li>SHOW TABLES 列出全部表；SHOW TABLE name 查看指定表结构；</li>
+     *   <li>DESCRIBE name / DESC name 是 SHOW TABLE name 的 MySQL 风格等价写法，
+     *       归一化为 target=TABLE 输出，语义层无需区分写法。</li>
+     * </ul>
      *
      * @return ShowStmt 节点（tableName 仅在 target 为 TABLE 时有值）
      */
     private ASTNode parseShow() {
-        Token start = expectKeyword("SHOW");
+        Token start = advance(); // SHOW / DESCRIBE / DESC，已由分发层校验
+        // DESCRIBE/DESC 归一化：DESCRIBE t 等价于 SHOW TABLE t
+        if ("DESCRIBE".equalsIgnoreCase(start.getLexeme())
+                || "DESC".equalsIgnoreCase(start.getLexeme())) {
+            Token table = expect(Token.Type.IDENTIFIER);
+            finishStatement();
+            return new ASTNode.ShowStmt(start.getLine(), start.getCol(), "TABLE", table.getLexeme());
+        }
         Token target = peek();
         if (target.getType() != Token.Type.KEYWORD
                 || !("TABLE".equalsIgnoreCase(target.getLexeme())
@@ -320,21 +414,22 @@ public class Parser {
                 table.getLexeme(), columns);
     }
 
-    /** 解析列定义：IDENTIFIER type（type -> INT | VARCHAR），类型统一存大写 */
+    /** 解析列定义：IDENTIFIER type（type -> INT | VARCHAR | DOUBLE），类型统一存大写 */
     private ASTNode.CreateTableStmt.ColumnDef parseColumnDef() {
         Token name = expect(Token.Type.IDENTIFIER);
         Token type = expectType();
         return new ASTNode.CreateTableStmt.ColumnDef(name.getLexeme(), type.getLexeme().toUpperCase());
     }
 
-    /** 断言当前 Token 为列类型关键字 INT 或 VARCHAR，符合则消费并返回 */
+    /** 断言当前 Token 为列类型关键字 INT/VARCHAR/DOUBLE，符合则消费并返回 */
     private Token expectType() {
         if (current.getType() == Token.Type.KEYWORD
                 && ("INT".equalsIgnoreCase(current.getLexeme())
-                || "VARCHAR".equalsIgnoreCase(current.getLexeme()))) {
+                || "VARCHAR".equalsIgnoreCase(current.getLexeme())
+                || "DOUBLE".equalsIgnoreCase(current.getLexeme()))) {
             return advance();
         }
-        throw syntaxError(current, "INT | VARCHAR");
+        throw syntaxError(current, "INT | VARCHAR | DOUBLE");
     }
 
     /**
