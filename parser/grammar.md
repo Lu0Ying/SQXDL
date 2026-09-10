@@ -12,7 +12,7 @@ Parser 采用**递归下降**方案实现，每个非终结符对应一个解析
 | `IDENTIFIER` | 标识符（表名 / 列名） | `student`、`id`、`my_table` |
 | `CONST` | 常量（数字 / 字符串字面量） | `18`、`'Tom'` |
 | `INT` / `VARCHAR` | 列类型关键字 | `INT`、`varchar` |
-| 关键字 | `SELECT` `FROM` `WHERE` `CREATE` `TABLE` `TABLES` `INSERT` `INTO` `VALUES` `DELETE` `UPDATE` `SET` `AND` `OR` `NOT` `TRUE` `FALSE` `SHOW` `DROP` | 不区分大小写 |
+| 关键字 | `SELECT` `FROM` `WHERE` `CREATE` `TABLE` `TABLES` `INSERT` `INTO` `VALUES` `DELETE` `UPDATE` `SET` `AND` `OR` `NOT` `TRUE` `FALSE` `SHOW` `DROP` `DESCRIBE` `DESC` | 不区分大小写 |
 | 运算符 | `=` `<` `>` `<=` `>=` `!=` `==` `+` `-` `*` `/` `&&` `\|\|` | `>=`、`&&` |
 | 分隔符 | `(` `)` `,` `;` | |
 | `EOF` | 输入结束 | |
@@ -48,7 +48,7 @@ assignment     -> IDENTIFIER '=' literal
 
 delete_stmt    -> DELETE FROM IDENTIFIER where_opt ';'
 
-show_stmt      -> SHOW ( TABLES | TABLE IDENTIFIER ) ';'
+show_stmt      -> SHOW ( TABLES | TABLE IDENTIFIER ) ';' | ( DESCRIBE | DESC ) IDENTIFIER ';'
 
 drop_table_stmt -> DROP TABLE IDENTIFIER ';'
 
@@ -167,8 +167,8 @@ WHERE age > 18 AND;
 | 错误位置 | 期望终结符 |
 |---|---|
 | 表达式操作数（`parseOperand`） | `IDENTIFIER | CONST | '(' | ')' | NOT` |
-| 语句分发（`parse`） | `SELECT | INSERT | UPDATE | DELETE | CREATE | SHOW | DROP` |
-| 语句收尾（`finishStatement`） | `';' | EOF | SELECT | INSERT | UPDATE | DELETE | CREATE | SHOW | DROP` |
+| 语句分发（`parse`） | `SELECT | INSERT | UPDATE | DELETE | CREATE | SHOW | DROP | DESCRIBE | DESC` |
+| 语句收尾（`finishStatement`） | `';' | EOF | SELECT | INSERT | UPDATE | DELETE | CREATE | SHOW | DROP | DESCRIBE | DESC` |
 | SHOW 目标（`parseShow`） | `TABLE | TABLES` |
 | 列类型（`expectType`） | `INT | VARCHAR` |
 | 其他关键字 / 分隔符 / 运算符 | 对应终结符本身 |

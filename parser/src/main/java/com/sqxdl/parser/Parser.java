@@ -66,7 +66,7 @@ public class Parser {
                 case "CREATE" -> {
                     return parseCreateTable();
                 }
-                case "SHOW" -> {
+                case "SHOW", "DESCRIBE", "DESC" -> {
                     return parseShow();
                 }
                 case "DROP" -> {
@@ -90,7 +90,7 @@ public class Parser {
         Token t = peek();
         boolean nextStatement = t.getType() == Token.Type.KEYWORD;
         if (t.getType() != Token.Type.EOF && !nextStatement) {
-            throw syntaxError(t, "';' | EOF | SELECT | INSERT | UPDATE | DELETE | CREATE | SHOW | DROP");
+            throw syntaxError(t, "';' | EOF | SELECT | INSERT | UPDATE | DELETE | CREATE | SHOW | DROP | DESCRIBE | DESC");
         }
     }
 
@@ -153,13 +153,24 @@ public class Parser {
     }
 
     /**
-     * 解析 SHOW 语句：SHOW TABLES | SHOW TABLE tableName。
-     * SHOW TABLES 用于列出全部表；SHOW TABLE name 用于查看指定表结构。
+     * 解析 SHOW / DESCRIBE / DESC 语句。
+     * <ul>
+     *   <li>SHOW TABLES 列出全部表；SHOW TABLE name 查看指定表结构；</li>
+     *   <li>DESCRIBE name / DESC name 是 SHOW TABLE name 的 MySQL 风格等价写法，
+     *       归一化为 target=TABLE 输出，语义层无需区分写法。</li>
+     * </ul>
      *
      * @return ShowStmt 节点（tableName 仅在 target 为 TABLE 时有值）
      */
     private ASTNode parseShow() {
-        Token start = expectKeyword("SHOW");
+        Token start = advance(); // SHOW / DESCRIBE / DESC，已由分发层校验
+        // DESCRIBE/DESC 归一化：DESCRIBE t 等价于 SHOW TABLE t
+        if ("DESCRIBE".equalsIgnoreCase(start.getLexeme())
+                || "DESC".equalsIgnoreCase(start.getLexeme())) {
+            Token table = expect(Token.Type.IDENTIFIER);
+            finishStatement();
+            return new ASTNode.ShowStmt(start.getLine(), start.getCol(), "TABLE", table.getLexeme());
+        }
         Token target = peek();
         if (target.getType() != Token.Type.KEYWORD
                 || !("TABLE".equalsIgnoreCase(target.getLexeme())

@@ -355,8 +355,9 @@ public abstract class ASTNode {
     }
 
     /**
-     * SHOW 语句节点，对应语法：SHOW TABLES | SHOW TABLE tableName。
+     * SHOW 语句节点，对应语法：SHOW TABLES | SHOW TABLE tableName | DESCRIBE tableName | DESC tableName。
      * target 为 "TABLES" 或 "TABLE"；target 为 "TABLE" 时 tableName 为表名，否则为 null。
+     * DESCRIBE / DESC 是 SHOW TABLE 的等价写法，归一化为 target=TABLE 输出。
      */
     public static class ShowStmt extends ASTNode {
 

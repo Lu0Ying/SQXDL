@@ -107,7 +107,7 @@ WHERE 条件表达式按优先级解析（低 → 高）：
 | `UpdateStmt` | `tableName`、`assignments`、`whereCond` | `assignments` 为 `Map<String, LiteralExpr>`，保持 SET 书写顺序 |
 | `DeleteStmt` | `tableName`、`whereCond` | 同上，`whereCond` 可为 `null` |
 | `CreateTableStmt` | `tableName`、`columns` | `columns` 为 `List<ColumnDef>`（`ColumnDef` 含 `name` 与 `type`） |
-| `ShowStmt` | `target`、`tableName` | `target` ∈ `TABLES` / `TABLE`；`target=TABLE` 时 `tableName` 为表名，否则为 `null` |
+| `ShowStmt` | `target`、`tableName` | `target` ∈ `TABLES` / `TABLE`；`target=TABLE` 时 `tableName` 为表名，否则为 `null`。`DESCRIBE t` / `DESC t` 归一化为 `target=TABLE` |
 | `DropTableStmt` | `tableName` | 语义层据此删除指定表及其数据 |
 | `BinaryExpr` | `op`、`left`、`right` | 表达式节点，`left`/`right` 可为嵌套表达式 |
 | `UnaryExpr` | `op`、`operand` | 一元运算（`NOT`），`operand` 为被作用表达式 |
@@ -168,4 +168,4 @@ Parser 在构建 WHERE 表达式树后立即做两层优化（后序遍历）：
 mvn -pl parser test
 ```
 
-`LexerTest`（23 例）覆盖五类 Token、注释、转义、行列号、拼写纠错与非法输入；`ParserTest`（61 例）覆盖七类语句（含 SHOW、DROP TABLE）、表达式优先级（含课程示例 `a = 1 OR b = 2 AND c = 3`）、NOT/括号、列类型、常量折叠、逻辑简化、错误格式（`unexpected token` + 期望终结符列表）、错误恢复与多语句输入。共 84 例。
+`LexerTest`（23 例）覆盖五类 Token、注释、转义、行列号、拼写纠错与非法输入；`ParserTest`（65 例）覆盖七类语句（含 SHOW/DESCRIBE/DESC、DROP TABLE）、表达式优先级（含课程示例 `a = 1 OR b = 2 AND c = 3`）、NOT/括号、列类型、常量折叠、逻辑简化、错误格式（`unexpected token` + 期望终结符列表）、错误恢复与多语句输入；`EdgeCaseTest`（22 例）集中覆盖词法、拼写纠错、表达式、SHOW/DROP 边界与错误恢复临界场景。共 110 例。

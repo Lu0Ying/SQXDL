@@ -578,6 +578,40 @@ class ParserTest {
         assertTrue(e.getMessage().contains("IDENTIFIER"), "应给出期望 IDENTIFIER");
     }
 
+    @Test
+    void describeTableNormalizedToTargetTable() {
+        // DESCRIBE t 是 SHOW TABLE t 的等价写法，归一化为 target=TABLE
+        ASTNode.ShowStmt stmt = (ASTNode.ShowStmt) parse("DESCRIBE student");
+        assertEquals("TABLE", stmt.getTarget(), "DESCRIBE 应归一化为 target=TABLE");
+        assertEquals("student", stmt.getTableName());
+    }
+
+    @Test
+    void descAbbreviationSupported() {
+        // DESC 是 DESCRIBE 的缩写，同样归一化为 target=TABLE
+        ASTNode.ShowStmt stmt = (ASTNode.ShowStmt) parse("desc student");
+        assertEquals("TABLE", stmt.getTarget(), "DESC 不区分大小写且归一化为 target=TABLE");
+        assertEquals("student", stmt.getTableName());
+    }
+
+    @Test
+    void describeMissingNameThrows() {
+        // DESCRIBE 后必须跟表名：缺表名时报 unexpected token，期望 IDENTIFIER
+        SqxdlException e = assertThrows(SqxdlException.class, () -> parse("DESCRIBE;"));
+        assertTrue(e.getMessage().contains("unexpected token ';'"), "应报 unexpected token");
+        assertTrue(e.getMessage().contains("IDENTIFIER"), "应给出期望 IDENTIFIER");
+    }
+
+    @Test
+    void showTablesFollowedByDescribeInMultiStatements() {
+        // 多语句：SHOW TABLES 与 DESCRIBE 连续解析，且两者都归一化/识别正确
+        List<ASTNode> stmts = parseAll("SHOW TABLES; DESCRIBE student;");
+        assertEquals(2, stmts.size());
+        assertEquals("TABLES", ((ASTNode.ShowStmt) stmts.get(0)).getTarget());
+        assertEquals("TABLE", ((ASTNode.ShowStmt) stmts.get(1)).getTarget());
+        assertEquals("student", ((ASTNode.ShowStmt) stmts.get(1)).getTableName());
+    }
+
     // ========== DROP TABLE 语句 ==========
 
     @Test
