@@ -4,9 +4,7 @@
 
 #include "core/storage_error.h"
 
-#include "scan_op.h"
-#include "filter_op.h"
-#include "project_op.h"
+#include "query_op.h"
 #include "insert_op.h"
 #include "update_op.h"
 #include "delete_op.h"
@@ -49,17 +47,9 @@ int main()
 
             const std::string op = physic_plan.value("op", "");
 
-            if (op == "scan")
+            if (op == "scan" || op == "filter" || op == "project")
             {
-                result = execute_scan(physic_plan);
-            }
-            else if (op == "filter")
-            {
-                result = execute_filter(physic_plan);
-            }
-            else if (op == "project")
-            {
-                result = execute_project(physic_plan);
+                result = execute_query_node(physic_plan);
             }
             else if (op == "insert")
             {

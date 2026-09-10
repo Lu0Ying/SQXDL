@@ -3,7 +3,7 @@
 
 #include "nlohmann/json.hpp"
 
-// 投影指定列：返回空数据集，列清单取 plan 中的 columns（默认成功）
+// 投影指定列（对应 SELECT 列清单）：从 child 数据集选取并重排 columns，返回结果集
 nlohmann::json execute_project(const nlohmann::json& plan);
 
 #endif
