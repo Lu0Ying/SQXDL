@@ -35,7 +35,8 @@ storage_core.exe
 ### 1.2 physic plan JSON 结构
 
 物理计划是一个 JSON 对象，通过 `op` 字段标识操作类型；查询类计划以**树**形式组织
-（父节点通过 `child` 引用子节点），写操作类计划为**单个**对象。
+（一元节点通过 `child` 引用子节点，二元连接节点通过 `left` / `right` 引用左右子树），
+写操作类计划为**单个**对象。
 
 支持的 `op` 类型：
 
@@ -44,6 +45,7 @@ storage_core.exe
 | `scan` | 全表扫描（叶子节点） | 数据集 |
 | `filter` | 按条件过滤（对应 WHERE） | 数据集 |
 | `project` | 投影指定列（对应 SELECT 列清单） | 数据集 |
+| `join` | 连接两个数据集（对应 JOIN） | 数据集 |
 | `insert` | 插入一行 | 行数 |
 | `update` | 更新满足条件的行 | 行数 |
 | `delete` | 删除满足条件的行 | 行数 |
@@ -58,8 +60,11 @@ storage_core.exe
 | type | 含义 | 字段 |
 |---|---|---|
 | `column` | 列引用 | `name`：列名 |
-| `literal` | 字面量 | `value`：值（使用 JSON 原生类型，数字/字符串/布尔） |
+| `literal` | 字面量 | `value`：值（使用 JSON 原生类型，数字/字符串/布尔/null） |
 | `binary` | 二元运算 | `op`：运算符，`left` / `right`：左右操作数 |
+
+> `binary` 支持的运算符：比较 `=`、`!=`、`<>`、`<`、`<=`、`>`、`>=`；
+> 逻辑 `AND`、`OR`（`AND` / `OR` 大小写不敏感）。
 
 ### 1.3 各操作示例
 
@@ -87,6 +92,30 @@ storage_core.exe
 
 > 说明：`SELECT *` 需由 Semantic Analyzer 在生成计划前展开为表的完整列清单，
 > 存储核心不接收 `*`。
+
+**连接（SELECT student.name, score.score FROM student JOIN score ON student.id = score.student_id）**
+
+```json
+{
+  "op": "join",
+  "type": "inner",
+  "left": { "op": "scan", "table": "student" },
+  "right": { "op": "scan", "table": "score" },
+  "condition": {
+    "type": "binary",
+    "op": "=",
+    "left": { "type": "column", "name": "id" },
+    "right": { "type": "column", "name": "student_id" }
+  }
+}
+```
+
+> `join` 为二元节点：`left` / `right` 为左右子计划（可为任意查询子树），
+> `type` 取 `inner`（缺省）、`left`、`right`、`cross`；
+> 除 `cross` 外 `condition` 必填，`cross` 不得携带 `condition`。
+> 两侧结果列重名时自动加来源前缀消歧（前缀取节点上的 `alias`，
+> 缺省为扫描的表名，如 `student.id`），`condition` 与上层 `project` 即按结果列名引用；
+> 外连接未匹配一侧的字段以 `null` 填充。
 
 **插入（INSERT INTO student VALUES (1, 'Alice')）**
 
@@ -131,6 +160,8 @@ storage_core.exe
   }
 }
 ```
+
+> `update` / `delete` 的 `condition` 可省略，省略表示作用于全表所有行。
 
 **建表（CREATE TABLE student (id INT, name VARCHAR)）**
 
@@ -183,8 +214,6 @@ storage_core.exe
 > `describeTable` 为单个对象（无 `child`），返回该表按建表顺序排列的列名
 > 与类型数据集；表不存在时返回错误 `TABLE_NOT_FOUND`。
 
-> `update` / `delete` 的 `condition` 可省略，省略表示作用于全表所有行。
-
 ## 2. 输出格式
 
 服务式运行下，每输入一行 physic plan，存储核心即向**标准输出（stdout）**打印
@@ -212,7 +241,8 @@ storage_core.exe
 }
 ```
 
-- `columns`：结果列名列表，与 `project` 的 `columns` 一致。
+- `columns`：结果列名列表（`project` 取其 `columns`；`scan` 为表的全部列名，
+  `filter` 与 child 一致，`join` 见下方命名规则）。
 - `rows`：二维数组，每个元素为一行，字段顺序与 `columns` 一致。
 
 > **JOIN 结果列命名**：连接结果同属 `resultset`，`columns` 按下述规则生成——
@@ -228,14 +258,14 @@ storage_core.exe
   "type": "resultset",
   "columns": ["table"],
   "rows": [
-    ["student"],
-    ["course"]
+    ["course"],
+    ["student"]
   ]
 }
 ```
 
 - `columns` 固定为 `["table"]`。
-- `rows`：每个元素为单元素数组，即一个表名；无表时为空数组。
+- `rows`：每个元素为单元素数组，即一个表名，按表名字典序排列；无表时为空数组。
 
 ### 2.3 DESCRIBE TABLE：返回表结构数据集
 
@@ -300,7 +330,23 @@ storage_core.exe
 > 服务式运行下，单行出错仅输出错误 JSON，进程继续运行；进程整体正常退出时
 > 退出码为 0。
 
-## 4. Java 调用示例（Hint）
+## 4. 数据持久化
+
+存储核心默认把数据落在本机固定目录 `/SQXDL/data/`（无需额外配置；Windows 上
+解析为当前盘符根目录下的 `\SQXDL\data\`），目录不存在时自动创建：
+
+| 文件 | 内容 | 写回时机 |
+|---|---|---|
+| `catalog.json` | 表结构（表名 -> 列定义） | `createTable` / `deleteTable` |
+| `storage.db` | 表内行数据（按 4KB 页组织） | `insert` / `update` / `delete` / `deleteTable` |
+
+- 表结构与行数据**分离存放**：`catalog.json` 只含 schema，不含任何行数据。
+- 进程启动后首次执行任一操作时会自动从上述文件恢复表结构与行数据，
+  因此**重启进程后数据依然存在**；同一目录下多次运行等价于操作同一个库。
+- `deleteTable` 会回收该表占用的全部数据页并更新目录。
+- 存储目录不可访问、文件损坏等异常返回 `INTERNAL_ERROR`。
+
+## 5. Java 调用示例（Hint）
 
 Java 程序通过 `ProcessBuilder` 启动 `storage_core.exe`，用子进程的 stdin/stdout
 按「一行进、一行出」的协议交互即可：
@@ -322,9 +368,9 @@ public class StorageClient implements AutoCloseable {
     public StorageClient() {
         try {
             // 注意：ProcessBuilder 的可执行文件路径是相对 JVM 自身工作目录解析的，
-            // 与 directory() 无关，因此必须使用绝对路径
-            process = new ProcessBuilder("D:/Projects/SQXDL/SQXDL/storage/storage_core.exe")
-                    .directory(new java.io.File("D:/Projects/SQXDL/SQXDL/storage"))
+            // 与 directory() 无关，因此必须使用绝对路径；以下路径按实际部署位置调整
+            process = new ProcessBuilder("D:/Projects/SQXDL/storage/storage_core.exe")
+                    .directory(new java.io.File("D:/Projects/SQXDL/storage"))
                     .start();
         } catch (java.io.IOException e) {
             throw new IllegalStateException("无法启动 storage_core.exe", e);
