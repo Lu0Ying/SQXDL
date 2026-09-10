@@ -54,6 +54,10 @@ public final class PhysicalPlanJson {
         } else if (plan instanceof PlanNode.CreateTablePlan p) {
             sb.append("{\"op\":\"createTable\",\"table\":").append(Json.quote(p.getTableName()))
               .append(",\"columns\":").append(stringArray(p.getColumns())).append('}');
+        } else if (plan instanceof PlanNode.ShowTablesPlan) {
+            sb.append("{\"op\":\"showTables\"}");
+        } else if (plan instanceof PlanNode.DropTablePlan p) {
+            sb.append("{\"op\":\"dropTable\",\"table\":").append(Json.quote(p.getTableName())).append('}');
         } else {
             throw new IllegalArgumentException("不支持的计划节点: " + plan.getClass().getSimpleName());
         }

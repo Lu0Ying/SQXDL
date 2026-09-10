@@ -2,6 +2,7 @@ package com.sqxdl.executor;
 
 import com.sqxdl.executor.storage.StorageClient;
 import com.sqxdl.executor.storage.StorageResult;
+import com.sqxdl.executor.storage.StorageTableMetadataProvider;
 import com.sqxdl.parser.ASTNode;
 import com.sqxdl.parser.Lexer;
 import com.sqxdl.parser.Parser;
@@ -94,6 +95,11 @@ public class SqlEngine {
         initSampleData();
         // 把示例表的列名与类型注册进数据字典，语义分析即可做真实校验
         tables.forEach((name, data) -> catalog.createTableWithTypes(name, data.columns));
+        // AUTO 模式启动时与存储核心同步表结构（B 组方案 B）；
+        // 核心未报告任何表（如骨架阶段 showTables 为空）时跳过，保留内置示例数据
+        if (mode == Mode.AUTO) {
+            syncCatalogFromStorage();
+        }
     }
 
     /** 可供浏览的表名列表（供 GUI 左侧列表使用） */
@@ -104,6 +110,15 @@ public class SqlEngine {
     /** 最近一次执行的回退说明；null 表示真实执行 */
     public String getFallbackReason() {
         return fallbackReason;
+    }
+
+    /** AUTO 启动时从存储核心同步表结构（showTables + describeTable） */
+    private void syncCatalogFromStorage() {
+        StorageTableMetadataProvider provider = new StorageTableMetadataProvider(storageClient);
+        List<String> storageTables = provider.getTableNames();
+        if (!storageTables.isEmpty()) {
+            catalog.syncFromStorage(provider);
+        }
     }
 
     /**
@@ -178,6 +193,11 @@ public class SqlEngine {
 
     /** 用内置示例数据模拟执行（数据保存在 JVM 内） */
     private StorageResult simulate(ASTNode ast) {
+        // 回退模拟前校验模拟层有该表数据（启动同步后目录可能含核心侧表而模拟层无数据）
+        String tableName = tableOf(ast);
+        if (tableName != null && !tables.containsKey(tableName)) {
+            return StorageResult.error("SIMULATE_NO_DATA", "模拟层缺少表数据: " + tableName);
+        }
         try {
             if (ast instanceof ASTNode.SelectStmt stmt) {
                 return simulateSelect(stmt);
@@ -194,12 +214,35 @@ public class SqlEngine {
             if (ast instanceof ASTNode.CreateTableStmt stmt) {
                 return simulateCreateTable(stmt);
             }
+            if (ast instanceof ASTNode.ShowTablesStmt) {
+                return simulateShowTables();
+            }
+            if (ast instanceof ASTNode.DropTableStmt stmt) {
+                return simulateDropTable(stmt);
+            }
             return StorageResult.error("UNSUPPORTED",
                     "模拟模式不支持该语句: " + ast.getClass().getSimpleName());
         } catch (RuntimeException e) {
             // 模拟求值中的运行期错误（如除零）不向调用方抛出
             return StorageResult.error("EXEC_ERROR", e.getMessage());
         }
+    }
+
+    /** 取语句涉及的表名（SHOW TABLES 等无表语句返回 null） */
+    private String tableOf(ASTNode ast) {
+        if (ast instanceof ASTNode.SelectStmt stmt) {
+            return stmt.getTableName();
+        }
+        if (ast instanceof ASTNode.InsertStmt stmt) {
+            return stmt.getTableName();
+        }
+        if (ast instanceof ASTNode.UpdateStmt stmt) {
+            return stmt.getTableName();
+        }
+        if (ast instanceof ASTNode.DeleteStmt stmt) {
+            return stmt.getTableName();
+        }
+        return null;
     }
 
     /** 模拟 SELECT：按 WHERE 条件过滤，再按列清单投影 */
@@ -279,6 +322,29 @@ public class SqlEngine {
     /** 模拟 CREATE TABLE：元数据已在 execute 中统一登记，此处仅返回行数 */
     private StorageResult simulateCreateTable(ASTNode.CreateTableStmt stmt) {
         return StorageResult.rowcount(0);
+    }
+
+    /** 模拟 SHOW TABLES：列出模拟层全部表名 */
+    private StorageResult simulateShowTables() {
+        List<List<Object>> rows = new ArrayList<>();
+        for (String name : tables.keySet()) {
+            List<Object> r = new ArrayList<>();
+            r.add(name);
+            rows.add(r);
+        }
+        return StorageResult.resultset(List.of("table"), rows);
+    }
+
+    /** 模拟 DROP TABLE：元数据已在语义层校验存在，此处同步清理目录与数据 */
+    private StorageResult simulateDropTable(ASTNode.DropTableStmt stmt) {
+        removeTableMetadata(stmt.getTableName());
+        return StorageResult.rowcount(0);
+    }
+
+    /** 删表后同步清理数据字典与模拟层数据 */
+    private void removeTableMetadata(String tableName) {
+        catalog.dropTable(tableName);
+        tables.remove(tableName);
     }
 
     /** 把建表列定义转为列信息清单（类型字符串 -> DataType，未知类型按 VARCHAR） */
