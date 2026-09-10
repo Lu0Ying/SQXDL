@@ -60,12 +60,14 @@ public class PlanGenerator {
                     optimizeCondition(stmt.getWhereCond()));
         }
         if (ast instanceof ASTNode.CreateTableStmt stmt) {
-            // CreateTablePlan 契约只保留列名清单（存储核心建表协议不含类型）
+            // 列名清单 + 带类型的列定义（存储核心建表协议已升级为对象数组）
             List<String> columnNames = new ArrayList<>();
+            List<CatalogImpl.ColumnInfo> columnDefs = new ArrayList<>();
             for (ASTNode.CreateTableStmt.ColumnDef def : stmt.getColumns()) {
                 columnNames.add(def.getName());
+                columnDefs.add(new CatalogImpl.ColumnInfo(def.getName(), toDataType(def.getType())));
             }
-            return new PlanNode.CreateTablePlan(stmt.getTableName(), columnNames);
+            return new PlanNode.CreateTablePlan(stmt.getTableName(), columnNames, columnDefs);
         }
         if (ast instanceof ASTNode.ShowTablesStmt stmt) {
             return new PlanNode.ShowTablesPlan();
@@ -74,6 +76,17 @@ public class PlanGenerator {
             return new PlanNode.DropTablePlan(stmt.getTableName());
         }
         throw new IllegalArgumentException("不支持的语句类型: " + ast.getClass().getSimpleName());
+    }
+
+    /** 建表类型字符串 -> 数据字典类型（INT/BOOLEAN 之外的类型按 VARCHAR 处理） */
+    private CatalogImpl.DataType toDataType(String typeName) {
+        if ("INT".equalsIgnoreCase(typeName)) {
+            return CatalogImpl.DataType.INT;
+        }
+        if ("BOOLEAN".equalsIgnoreCase(typeName)) {
+            return CatalogImpl.DataType.BOOLEAN;
+        }
+        return CatalogImpl.DataType.VARCHAR;
     }
 
     // ========== SELECT 计划生成 ==========

@@ -186,15 +186,23 @@ public abstract class PlanNode {
 
     /**
      * 建表计划：创建表并登记列名清单，对应 CREATE TABLE 语句。
+     * 存储核心协议已升级为带类型的列定义，可选携带 columnDefs（为 null 时退化为仅列名）。
      */
     public static class CreateTablePlan extends PlanNode {
 
         private final String tableName;
         private final List<String> columns;
+        private final List<CatalogImpl.ColumnInfo> columnDefs;
 
         public CreateTablePlan(String tableName, List<String> columns) {
+            this(tableName, columns, null);
+        }
+
+        public CreateTablePlan(String tableName, List<String> columns,
+                               List<CatalogImpl.ColumnInfo> columnDefs) {
             this.tableName = tableName;
             this.columns = columns;
+            this.columnDefs = columnDefs;
         }
 
         public String getTableName() {
@@ -203,6 +211,11 @@ public abstract class PlanNode {
 
         public List<String> getColumns() {
             return columns;
+        }
+
+        /** 带类型的列定义（可能为 null，序列化时按需退化） */
+        public List<CatalogImpl.ColumnInfo> getColumnDefs() {
+            return columnDefs;
         }
 
         @Override
