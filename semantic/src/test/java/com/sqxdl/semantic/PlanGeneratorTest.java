@@ -35,7 +35,7 @@ class PlanGeneratorTest {
     @Test
     void select_noWhere_success() {
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id", "name"), null);
+                1, 1, "student", Arrays.asList("id", "name"), null, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         assertTrue(plan instanceof PlanNode.ProjectPlan);
@@ -51,7 +51,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 12, ">", col, lit);
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         assertTrue(plan instanceof PlanNode.ProjectPlan);
@@ -62,7 +62,7 @@ class PlanGeneratorTest {
     @Test
     void selectStar_expandsToAllColumns() {
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("*"), null);
+                1, 1, "student", Arrays.asList("*"), null, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         ProjectPlanCheck(plan, Arrays.asList("id", "name", "age"));
@@ -77,7 +77,7 @@ class PlanGeneratorTest {
                 1, 10, "=", lit(1, 9, "1", Kind.NUMBER), lit(1, 13, "1", Kind.NUMBER));
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         // Project → SeqScan（跳过了 Filter）
@@ -92,7 +92,7 @@ class PlanGeneratorTest {
                 1, 10, "=", lit(1, 9, "1", Kind.NUMBER), lit(1, 13, "0", Kind.NUMBER));
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         // Project → Filter(FALSE) → SeqScan
@@ -109,7 +109,7 @@ class PlanGeneratorTest {
                 1, 14, ">", add, lit(1, 16, "4", Kind.NUMBER));
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         // 折叠后为 TRUE → 跳过 Filter
@@ -126,7 +126,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, ">", add, col);
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         // 折叠后为 5 > age，仍需 Filter
@@ -144,7 +144,7 @@ class PlanGeneratorTest {
                 1, 10, "=", lit(1, 9, "abc", Kind.STRING), lit(1, 15, "abc", Kind.STRING));
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         assertTrue(getChild(plan) instanceof PlanNode.SeqScanPlan);
@@ -157,7 +157,7 @@ class PlanGeneratorTest {
                 1, 10, "!=", lit(1, 9, "abc", Kind.STRING), lit(1, 15, "abc", Kind.STRING));
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         assertTrue(getChild(plan) instanceof PlanNode.FilterPlan);
@@ -172,7 +172,7 @@ class PlanGeneratorTest {
                 1, 14, ">", div, lit(1, 16, "0", Kind.NUMBER));
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         // 除以零不折叠，保留 Filter
@@ -189,7 +189,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 20, "AND", left, lit(1, 24, "true", Kind.BOOLEAN));
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         // 化简后仍需 Filter（age > 18 不是常量）
@@ -208,7 +208,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 20, "AND", left, lit(1, 24, "false", Kind.BOOLEAN));
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         // 化简为 FALSE → Filter(FALSE)
@@ -226,7 +226,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 20, "OR", left, lit(1, 24, "true", Kind.BOOLEAN));
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         // 化简为 TRUE → 跳过 Filter
@@ -241,7 +241,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 20, "OR", left, lit(1, 24, "false", Kind.BOOLEAN));
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         // 化简后仍需 Filter
@@ -261,7 +261,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 20, ">", add, lit(1, 24, "18", Kind.NUMBER));
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         assertTrue(getChild(plan) instanceof PlanNode.FilterPlan);
@@ -279,7 +279,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 20, ">", mul, lit(1, 24, "18", Kind.NUMBER));
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         assertTrue(getChild(plan) instanceof PlanNode.FilterPlan);
@@ -295,7 +295,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 20, ">", sub, lit(1, 24, "18", Kind.NUMBER));
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         ASTNode.BinaryExpr filterCond = (ASTNode.BinaryExpr) ((PlanNode.FilterPlan) getChild(plan)).getCondition();
@@ -310,7 +310,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 20, ">", div, lit(1, 24, "18", Kind.NUMBER));
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         ASTNode.BinaryExpr filterCond = (ASTNode.BinaryExpr) ((PlanNode.FilterPlan) getChild(plan)).getCondition();
@@ -329,7 +329,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, ">", left, right);
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         assertTrue(getChild(plan) instanceof PlanNode.SeqScanPlan);
@@ -344,7 +344,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, ">", left, right);
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         assertTrue(getChild(plan) instanceof PlanNode.FilterPlan);
@@ -425,7 +425,7 @@ class PlanGeneratorTest {
     void selectStar_withAnalyzer_usesExpandedColumns() {
         SemanticAnalyzer analyzer = new SemanticAnalyzer(catalog);
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("*"), null);
+                1, 1, "student", Arrays.asList("*"), null, List.of(), List.of(), List.of());
 
         // 先做语义分析（展开 *）
         analyzer.analyze(stmt);
@@ -441,7 +441,7 @@ class PlanGeneratorTest {
     void selectStar_withoutAnalyzer_selfExpands() {
         // 不设置 analyzer，PlanGenerator 自行展开
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("*"), null);
+                1, 1, "student", Arrays.asList("*"), null, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         ProjectPlanCheck(plan, Arrays.asList("id", "name", "age"));
@@ -454,7 +454,7 @@ class PlanGeneratorTest {
         generator.setAnalyzer(analyzer);
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), null);
+                1, 1, "student", Arrays.asList("id"), null, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         ProjectPlanCheck(plan, Arrays.asList("id"));
@@ -468,7 +468,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 12, ">", col, lit);
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id", "name"), cond);
+                1, 1, "student", Arrays.asList("id", "name"), cond, List.of(), List.of(), List.of());
 
         analyzer.analyze(stmt);
         generator.setAnalyzer(analyzer);
@@ -488,7 +488,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 12, ">", col, lit);
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id", "name"), cond);
+                1, 1, "student", Arrays.asList("id", "name"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         String output = PlanNode.formatPlan(plan);
@@ -505,7 +505,7 @@ class PlanGeneratorTest {
     @Test
     void formatPlan_selectNoWhere() {
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), null);
+                1, 1, "student", Arrays.asList("id"), null, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         String output = PlanNode.formatPlan(plan);
@@ -518,7 +518,7 @@ class PlanGeneratorTest {
     @Test
     void formatPlan_selectStar() {
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("*"), null);
+                1, 1, "student", Arrays.asList("*"), null, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         String output = PlanNode.formatPlan(plan);
@@ -613,7 +613,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 12, ">", col, val);
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id", "name"), cond);
+                1, 1, "student", Arrays.asList("id", "name"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         String json = generator.toJson(plan);
@@ -637,7 +637,7 @@ class PlanGeneratorTest {
     @Test
     void toJson_selectNoWhere() {
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id", "name"), null);
+                1, 1, "student", Arrays.asList("id", "name"), null, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         String json = generator.toJson(plan);
@@ -650,7 +650,7 @@ class PlanGeneratorTest {
     @Test
     void toJson_selectStar() {
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("*"), null);
+                1, 1, "student", Arrays.asList("*"), null, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         String json = generator.toJson(plan);
@@ -773,7 +773,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 12, "=", col, lit(1, 15, "true", Kind.BOOLEAN));
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         String json = generator.toJson(plan);
@@ -789,7 +789,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 12, "=", col, lit(1, 15, "Alice", Kind.STRING));
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         String json = generator.toJson(plan);
@@ -808,7 +808,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, "AND", left, right);
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         String json = generator.toJson(plan);
@@ -822,7 +822,7 @@ class PlanGeneratorTest {
     @Test
     void toJson_singleLineNoNewline() {
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), null);
+                1, 1, "student", Arrays.asList("id"), null, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         String json = generator.toJson(plan);
@@ -855,7 +855,7 @@ class PlanGeneratorTest {
                 new ASTNode.IdentifierExpr(1, 9, "id"),
                 lit(1, 13, "1", Kind.NUMBER));
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id", "name"), cond);
+                1, 1, "student", Arrays.asList("id", "name"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         String json = generator.toJson(plan);
@@ -939,7 +939,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, "AND",
                 left, lit(1, 20, "true", Kind.BOOLEAN));
 
-        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond);
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         // 根节点是 ProjectPlan，child 是 FilterPlan
@@ -959,7 +959,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, "OR",
                 left, lit(1, 20, "false", Kind.BOOLEAN));
 
-        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond);
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         assertInstanceOf(PlanNode.ProjectPlan.class, plan);
@@ -977,7 +977,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, "AND",
                 left, lit(1, 20, "false", Kind.BOOLEAN));
 
-        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond);
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         assertInstanceOf(PlanNode.ProjectPlan.class, plan);
@@ -995,7 +995,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, "OR",
                 left, lit(1, 20, "true", Kind.BOOLEAN));
 
-        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond);
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         // 恒真跳过 Filter，应该是 Project → SeqScan
@@ -1012,7 +1012,7 @@ class PlanGeneratorTest {
                 new ASTNode.IdentifierExpr(1, 18, "age"), lit(1, 22, "20", Kind.NUMBER));
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, "AND", left, right);
 
-        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond);
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         String json = generator.toJson(plan);
@@ -1049,7 +1049,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 16, ">", add, col);
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         assertTrue(getChild(plan) instanceof PlanNode.FilterPlan);
@@ -1069,7 +1069,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 15, ">", add, col);
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         assertTrue(getChild(plan) instanceof PlanNode.FilterPlan);
@@ -1090,7 +1090,7 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, ">", add, col);
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         assertTrue(getChild(plan) instanceof PlanNode.FilterPlan);
@@ -1106,7 +1106,7 @@ class PlanGeneratorTest {
                 1, 10, ">", lit(1, 9, "3.14", Kind.NUMBER), lit(1, 16, "2.5", Kind.NUMBER));
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         assertTrue(getChild(plan) instanceof PlanNode.SeqScanPlan);
@@ -1119,7 +1119,7 @@ class PlanGeneratorTest {
                 1, 10, ">", lit(1, 9, "1.5", Kind.NUMBER), lit(1, 15, "2.5", Kind.NUMBER));
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("id"), cond);
+                1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
         assertTrue(getChild(plan) instanceof PlanNode.FilterPlan);
@@ -1156,10 +1156,314 @@ class PlanGeneratorTest {
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 15, ">",
                 col, lit(1, 18, "3.14", Kind.NUMBER));
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "scores", Arrays.asList("score"), cond);
+                1, 1, "scores", Arrays.asList("score"), cond, List.of(), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
         String json = generator.toJson(plan);
 
         assertTrue(json.contains("\"value\":3.14"));
+    }
+
+    // ========== 多表 JOIN 计划生成 ==========
+
+    @Test
+    void join_generatesJoinPlan() {
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        // ON student.id = course.cid
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name", "cname"), null,
+                List.of(join), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        // Project → Join → [SeqScan(student), SeqScan(course)]
+        assertInstanceOf(PlanNode.ProjectPlan.class, plan);
+        PlanNode joinNode = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.JoinPlan.class, joinNode);
+        PlanNode.JoinPlan jp = (PlanNode.JoinPlan) joinNode;
+        assertEquals(2, jp.getChildren().size());
+        assertInstanceOf(PlanNode.SeqScanPlan.class, jp.getChildren().get(0));
+        assertInstanceOf(PlanNode.SeqScanPlan.class, jp.getChildren().get(1));
+        assertEquals("student", ((PlanNode.SeqScanPlan) jp.getChildren().get(0)).getTableName());
+        assertEquals("course", ((PlanNode.SeqScanPlan) jp.getChildren().get(1)).getTableName());
+        // 第一个 ON 条件为 null（左表），第二个为 onCond
+        assertNull(jp.getOnConditions().get(0));
+        assertNotNull(jp.getOnConditions().get(1));
+    }
+
+    @Test
+    void join_withWhere_generatesFilterOnJoin() {
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        // WHERE age > 18
+        ASTNode.BinaryExpr whereCond = new ASTNode.BinaryExpr(1, 50, ">",
+                new ASTNode.IdentifierExpr(1, 48, "age"),
+                lit(1, 55, "18", Kind.NUMBER));
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), whereCond,
+                List.of(join), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        // Project → Filter → Join → [SeqScan, SeqScan]
+        assertInstanceOf(PlanNode.ProjectPlan.class, plan);
+        PlanNode filter = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.FilterPlan.class, filter);
+        PlanNode joinNode = ((PlanNode.FilterPlan) filter).getChild();
+        assertInstanceOf(PlanNode.JoinPlan.class, joinNode);
+    }
+
+    @Test
+    void toJson_join() {
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), null,
+                List.of(join), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+        String json = generator.toJson(plan);
+
+        assertTrue(json.contains("\"op\":\"join\""));
+        assertTrue(json.contains("\"children\":["));
+        assertTrue(json.contains("\"table\":\"student\""));
+        assertTrue(json.contains("\"table\":\"course\""));
+        assertTrue(json.contains("\"on\":["));
+        assertTrue(json.contains("null")); // 左表 ON 条件为 null
+    }
+
+    @Test
+    void formatPlan_join() {
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), null,
+                List.of(join), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        String output = PlanNode.formatPlan(plan);
+        assertTrue(output.contains("JoinPlan"));
+        assertTrue(output.contains("SeqScanPlan"));
+        assertTrue(output.contains("student"));
+        assertTrue(output.contains("course"));
+        assertTrue(output.contains("(左表)")); // 左表 ON 条件显示
+    }
+
+    // ========== GROUP BY 计划生成 ==========
+
+    @Test
+    void groupBy_generatesGroupByPlan() {
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("age"), null,
+                List.of(), List.of("age"), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        // Project → GroupBy → SeqScan
+        assertInstanceOf(PlanNode.ProjectPlan.class, plan);
+        PlanNode groupBy = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.GroupByPlan.class, groupBy);
+        assertEquals(Arrays.asList("age"), ((PlanNode.GroupByPlan) groupBy).getGroupByColumns());
+        assertInstanceOf(PlanNode.SeqScanPlan.class, ((PlanNode.GroupByPlan) groupBy).getChild());
+    }
+
+    @Test
+    void groupBy_withWhere_generatesFilterBeforeGroupBy() {
+        ASTNode.BinaryExpr whereCond = new ASTNode.BinaryExpr(1, 20, ">",
+                new ASTNode.IdentifierExpr(1, 18, "age"),
+                lit(1, 25, "18", Kind.NUMBER));
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("age"), whereCond,
+                List.of(), List.of("age"), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        // Project → GroupBy → Filter → SeqScan
+        assertInstanceOf(PlanNode.ProjectPlan.class, plan);
+        PlanNode groupBy = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.GroupByPlan.class, groupBy);
+        PlanNode filter = ((PlanNode.GroupByPlan) groupBy).getChild();
+        assertInstanceOf(PlanNode.FilterPlan.class, filter);
+    }
+
+    @Test
+    void toJson_groupBy() {
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("age"), null,
+                List.of(), List.of("age"), List.of());
+        PlanNode plan = generator.generate(stmt);
+        String json = generator.toJson(plan);
+
+        assertTrue(json.contains("\"op\":\"groupBy\""));
+        assertTrue(json.contains("\"columns\":[\"age\"]"));
+    }
+
+    @Test
+    void formatPlan_groupBy() {
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("age"), null,
+                List.of(), List.of("age"), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        String output = PlanNode.formatPlan(plan);
+        assertTrue(output.contains("GroupByPlan"));
+        assertTrue(output.contains("age"));
+    }
+
+    // ========== ORDER BY 计划生成 ==========
+
+    @Test
+    void orderBy_generatesOrderByPlan() {
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), null,
+                List.of(), List.of(),
+                List.of(new ASTNode.SelectStmt.OrderItem("age", "ASC")));
+        PlanNode plan = generator.generate(stmt);
+
+        // Project → OrderBy → SeqScan
+        assertInstanceOf(PlanNode.ProjectPlan.class, plan);
+        PlanNode orderBy = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.OrderByPlan.class, orderBy);
+        List<PlanNode.OrderByPlan.OrderItem> items = ((PlanNode.OrderByPlan) orderBy).getOrderByItems();
+        assertEquals(1, items.size());
+        assertEquals("age", items.get(0).getColumn());
+        assertEquals("ASC", items.get(0).getDirection());
+    }
+
+    @Test
+    void orderBy_descDirection_preserved() {
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), null,
+                List.of(), List.of(),
+                List.of(new ASTNode.SelectStmt.OrderItem("age", "DESC")));
+        PlanNode plan = generator.generate(stmt);
+
+        PlanNode.OrderByPlan orderBy = (PlanNode.OrderByPlan) ((PlanNode.ProjectPlan) plan).getChild();
+        assertEquals("DESC", orderBy.getOrderByItems().get(0).getDirection());
+    }
+
+    @Test
+    void toJson_orderBy() {
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), null,
+                List.of(), List.of(),
+                List.of(new ASTNode.SelectStmt.OrderItem("age", "DESC")));
+        PlanNode plan = generator.generate(stmt);
+        String json = generator.toJson(plan);
+
+        assertTrue(json.contains("\"op\":\"orderBy\""));
+        assertTrue(json.contains("\"column\":\"age\""));
+        assertTrue(json.contains("\"direction\":\"DESC\""));
+    }
+
+    @Test
+    void formatPlan_orderBy() {
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), null,
+                List.of(), List.of(),
+                List.of(new ASTNode.SelectStmt.OrderItem("age", "ASC")));
+        PlanNode plan = generator.generate(stmt);
+
+        String output = PlanNode.formatPlan(plan);
+        assertTrue(output.contains("OrderByPlan"));
+        assertTrue(output.contains("age"));
+        assertTrue(output.contains("ASC"));
+    }
+
+    // ========== 组合：JOIN + WHERE + GROUP BY + ORDER BY ==========
+
+    @Test
+    void join_where_groupBy_orderBy_fullPlanTree() {
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        // ON student.id = course.cid
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        // WHERE age > 18
+        ASTNode.BinaryExpr whereCond = new ASTNode.BinaryExpr(1, 50, ">",
+                new ASTNode.IdentifierExpr(1, 48, "age"),
+                lit(1, 55, "18", Kind.NUMBER));
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name", "cname"), whereCond,
+                List.of(join), List.of("age"),
+                List.of(new ASTNode.SelectStmt.OrderItem("cname", "ASC")));
+        PlanNode plan = generator.generate(stmt);
+
+        // Project → OrderBy → GroupBy → Filter → Join → [SeqScan, SeqScan]
+        assertInstanceOf(PlanNode.ProjectPlan.class, plan);
+        PlanNode orderBy = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.OrderByPlan.class, orderBy);
+
+        PlanNode groupBy = ((PlanNode.OrderByPlan) orderBy).getChild();
+        assertInstanceOf(PlanNode.GroupByPlan.class, groupBy);
+
+        PlanNode filter = ((PlanNode.GroupByPlan) groupBy).getChild();
+        assertInstanceOf(PlanNode.FilterPlan.class, filter);
+
+        PlanNode joinNode = ((PlanNode.FilterPlan) filter).getChild();
+        assertInstanceOf(PlanNode.JoinPlan.class, joinNode);
+        assertEquals(2, ((PlanNode.JoinPlan) joinNode).getChildren().size());
+    }
+
+    @Test
+    void toJson_joinWhereGroupByOrderBy() {
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.BinaryExpr whereCond = new ASTNode.BinaryExpr(1, 50, ">",
+                new ASTNode.IdentifierExpr(1, 48, "age"),
+                lit(1, 55, "18", Kind.NUMBER));
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), whereCond,
+                List.of(join), List.of("age"),
+                List.of(new ASTNode.SelectStmt.OrderItem("cname", "ASC")));
+        PlanNode plan = generator.generate(stmt);
+        String json = generator.toJson(plan);
+
+        // 所有节点类型都应该出现在 JSON 中
+        assertTrue(json.contains("\"op\":\"project\""));
+        assertTrue(json.contains("\"op\":\"orderBy\""));
+        assertTrue(json.contains("\"op\":\"groupBy\""));
+        assertTrue(json.contains("\"op\":\"filter\""));
+        assertTrue(json.contains("\"op\":\"join\""));
+        assertTrue(json.contains("\"op\":\"scan\""));
+        assertFalse(json.contains("\n"));
     }
 }
