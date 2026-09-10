@@ -240,6 +240,28 @@ public abstract class PlanNode {
     }
 
     /**
+     * 查看表结构计划，对应 SHOW TABLE 表名 语句（存储协议 describeTable）。
+     * 返回 column + type 两列数据集，按建表列顺序排列。
+     */
+    public static class DescribeTablePlan extends PlanNode {
+
+        private final String tableName;
+
+        public DescribeTablePlan(String tableName) {
+            this.tableName = tableName;
+        }
+
+        public String getTableName() {
+            return tableName;
+        }
+
+        @Override
+        public String toString() {
+            return "DescribeTable{table=" + tableName + "}";
+        }
+    }
+
+    /**
      * 删表计划，对应 DROP TABLE 语句。
      * 删除 tableName 对应的表及其数据。
      */

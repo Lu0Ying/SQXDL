@@ -44,8 +44,8 @@ public class SemanticAnalyzer {
             analyzeDeleteStmt(stmt);
         } else if (ast instanceof ASTNode.CreateTableStmt stmt) {
             analyzeCreateTableStmt(stmt);
-        } else if (ast instanceof ASTNode.ShowTablesStmt stmt) {
-            analyzeShowTablesStmt(stmt);
+        } else if (ast instanceof ASTNode.ShowStmt stmt) {
+            analyzeShowStmt(stmt);
         } else if (ast instanceof ASTNode.DropTableStmt stmt) {
             analyzeDropTableStmt(stmt);
         } else {
@@ -172,10 +172,14 @@ public class SemanticAnalyzer {
         }
     }
 
-    // ========== SHOW TABLES ==========
+    // ========== SHOW ==========
 
-    private void analyzeShowTablesStmt(ASTNode.ShowTablesStmt stmt) {
-        // SHOW TABLES 无需额外检查，直接通过
+    private void analyzeShowStmt(ASTNode.ShowStmt stmt) {
+        // SHOW TABLES 无需检查；SHOW TABLE 表名 要求表必须存在
+        if ("TABLE".equals(stmt.getTarget())
+                && !catalog.tableExists(stmt.getTableName())) {
+            throw error("表 " + stmt.getTableName() + " 不存在", stmt);
+        }
     }
 
     // ========== DROP TABLE ==========

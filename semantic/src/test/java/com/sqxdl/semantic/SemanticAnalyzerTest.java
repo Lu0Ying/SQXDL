@@ -457,7 +457,7 @@ class SemanticAnalyzerTest {
 
     @Test
     void showTables_succeeds() {
-        ASTNode.ShowTablesStmt stmt = new ASTNode.ShowTablesStmt(1, 1);
+        ASTNode.ShowStmt stmt = new ASTNode.ShowStmt(1, 1, "TABLES", null);
         assertDoesNotThrow(() -> analyzer.analyze(stmt));
     }
 

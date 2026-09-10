@@ -57,6 +57,8 @@ public final class PhysicalPlanJson {
               .append(",\"columns\":").append(columnDefArray(p)).append('}');
         } else if (plan instanceof PlanNode.ShowTablesPlan) {
             sb.append("{\"op\":\"showTables\"}");
+        } else if (plan instanceof PlanNode.DescribeTablePlan p) {
+            sb.append("{\"op\":\"describeTable\",\"table\":").append(Json.quote(p.getTableName())).append('}');
         } else if (plan instanceof PlanNode.DropTablePlan p) {
             // 存储核心协议：删表操作名为 deleteTable（非 dropTable）
             sb.append("{\"op\":\"deleteTable\",\"table\":").append(Json.quote(p.getTableName())).append('}');

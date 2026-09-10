@@ -275,8 +275,10 @@ public class SqlEngine implements AutoCloseable {
             if (ast instanceof ASTNode.CreateTableStmt stmt) {
                 return simulateCreateTable(stmt);
             }
-            if (ast instanceof ASTNode.ShowTablesStmt) {
-                return simulateShowTables();
+            if (ast instanceof ASTNode.ShowStmt stmt) {
+                return "TABLE".equals(stmt.getTarget())
+                        ? simulateDescribeTable(stmt.getTableName())
+                        : simulateShowTables();
             }
             if (ast instanceof ASTNode.DropTableStmt stmt) {
                 return simulateDropTable(stmt);
@@ -394,6 +396,21 @@ public class SqlEngine implements AutoCloseable {
             rows.add(r);
         }
         return StorageResult.resultset(List.of("table"), rows);
+    }
+
+    /** 模拟 SHOW TABLE 表名：从数据字典输出列名与类型（协议 describeTable 格式） */
+    private StorageResult simulateDescribeTable(String tableName) {
+        List<List<Object>> rows = new ArrayList<>();
+        TableData data = tables.get(tableName);
+        if (data != null) {
+            for (CatalogImpl.ColumnInfo col : data.columns) {
+                List<Object> r = new ArrayList<>();
+                r.add(col.getName());
+                r.add(col.getType().name());
+                rows.add(r);
+            }
+        }
+        return StorageResult.resultset(List.of("column", "type"), rows);
     }
 
     /** 模拟 DROP TABLE：元数据已在语义层校验存在，此处同步清理目录与数据 */

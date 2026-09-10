@@ -872,14 +872,14 @@ class PlanGeneratorTest {
 
     @Test
     void generate_showTables() {
-        ASTNode.ShowTablesStmt stmt = new ASTNode.ShowTablesStmt(1, 1);
+        ASTNode.ShowStmt stmt = new ASTNode.ShowStmt(1, 1, "TABLES", null);
         PlanNode plan = generator.generate(stmt);
         assertInstanceOf(PlanNode.ShowTablesPlan.class, plan);
     }
 
     @Test
     void toJson_showTables() {
-        ASTNode.ShowTablesStmt stmt = new ASTNode.ShowTablesStmt(1, 1);
+        ASTNode.ShowStmt stmt = new ASTNode.ShowStmt(1, 1, "TABLES", null);
         PlanNode plan = generator.generate(stmt);
         String json = generator.toJson(plan);
         assertTrue(json.contains("\"op\":\"showTables\""));
@@ -887,10 +887,18 @@ class PlanGeneratorTest {
 
     @Test
     void formatPlan_showTables() {
-        ASTNode.ShowTablesStmt stmt = new ASTNode.ShowTablesStmt(1, 1);
+        ASTNode.ShowStmt stmt = new ASTNode.ShowStmt(1, 1, "TABLES", null);
         PlanNode plan = generator.generate(stmt);
         String output = PlanNode.formatPlan(plan);
         assertTrue(output.contains("ShowTablesPlan"));
+    }
+
+    @Test
+    void generate_showTable_describe() {
+        ASTNode.ShowStmt stmt = new ASTNode.ShowStmt(1, 1, "TABLE", "student");
+        PlanNode plan = generator.generate(stmt);
+        assertInstanceOf(PlanNode.DescribeTablePlan.class, plan);
+        assertTrue(generator.toJson(plan).contains("\"op\":\"describeTable\""));
     }
 
     // ========== DROP TABLE ==========

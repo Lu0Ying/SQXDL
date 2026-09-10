@@ -69,7 +69,10 @@ public class PlanGenerator {
             }
             return new PlanNode.CreateTablePlan(stmt.getTableName(), columnNames, columnDefs);
         }
-        if (ast instanceof ASTNode.ShowTablesStmt stmt) {
+        if (ast instanceof ASTNode.ShowStmt stmt) {
+            if ("TABLE".equals(stmt.getTarget())) {
+                return new PlanNode.DescribeTablePlan(stmt.getTableName());
+            }
             return new PlanNode.ShowTablesPlan();
         }
         if (ast instanceof ASTNode.DropTableStmt stmt) {
@@ -429,6 +432,9 @@ public class PlanGenerator {
             writeStringList(sb, p.getColumns());
         } else if (plan instanceof PlanNode.ShowTablesPlan) {
             sb.append("\"op\":\"showTables\"");
+        } else if (plan instanceof PlanNode.DescribeTablePlan p) {
+            sb.append("\"op\":\"describeTable\",\"table\":");
+            writeJsonString(sb, p.getTableName());
         } else if (plan instanceof PlanNode.DropTablePlan p) {
             sb.append("\"op\":\"dropTable\",\"table\":");
             writeJsonString(sb, p.getTableName());
