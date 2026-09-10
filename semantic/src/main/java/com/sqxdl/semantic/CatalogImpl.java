@@ -18,6 +18,7 @@ public class CatalogImpl {
      */
     public enum DataType {
         INT,
+        DOUBLE,
         VARCHAR,
         BOOLEAN
     }

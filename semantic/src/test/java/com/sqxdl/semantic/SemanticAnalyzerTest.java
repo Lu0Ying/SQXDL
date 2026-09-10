@@ -23,7 +23,8 @@ class SemanticAnalyzerTest {
         List<CatalogImpl.ColumnInfo> studentCols = Arrays.asList(
                 new CatalogImpl.ColumnInfo("id", CatalogImpl.DataType.INT),
                 new CatalogImpl.ColumnInfo("name", CatalogImpl.DataType.VARCHAR),
-                new CatalogImpl.ColumnInfo("age", CatalogImpl.DataType.INT)
+                new CatalogImpl.ColumnInfo("age", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("score", CatalogImpl.DataType.DOUBLE)
         );
         catalog.createTableWithTypes("student", studentCols);
         analyzer = new SemanticAnalyzer(catalog);
@@ -89,7 +90,7 @@ class SemanticAnalyzerTest {
         analyzer.analyze(stmt);
 
         List<String> expanded = analyzer.getExpandedColumns(stmt);
-        assertEquals(Arrays.asList("id", "name", "age"), expanded);
+        assertEquals(Arrays.asList("id", "name", "age", "score"), expanded);
     }
 
     @Test
@@ -190,7 +191,8 @@ class SemanticAnalyzerTest {
         List<ASTNode.LiteralExpr> values = Arrays.asList(
                 new ASTNode.LiteralExpr(1, 20, "1", ASTNode.LiteralExpr.Kind.NUMBER),
                 new ASTNode.LiteralExpr(1, 25, "Alice", ASTNode.LiteralExpr.Kind.STRING),
-                new ASTNode.LiteralExpr(1, 30, "18", ASTNode.LiteralExpr.Kind.NUMBER)
+                new ASTNode.LiteralExpr(1, 30, "18", ASTNode.LiteralExpr.Kind.NUMBER),
+                new ASTNode.LiteralExpr(1, 35, "95.5", ASTNode.LiteralExpr.Kind.NUMBER)
         );
         ASTNode.InsertStmt stmt = new ASTNode.InsertStmt(
                 1, 1, "student",
@@ -219,7 +221,8 @@ class SemanticAnalyzerTest {
         List<ASTNode.LiteralExpr> values = Arrays.asList(
                 new ASTNode.LiteralExpr(1, 20, "not_a_number", ASTNode.LiteralExpr.Kind.STRING),
                 new ASTNode.LiteralExpr(1, 25, "Alice", ASTNode.LiteralExpr.Kind.STRING),
-                new ASTNode.LiteralExpr(1, 30, "18", ASTNode.LiteralExpr.Kind.NUMBER)
+                new ASTNode.LiteralExpr(1, 30, "18", ASTNode.LiteralExpr.Kind.NUMBER),
+                new ASTNode.LiteralExpr(1, 35, "95.5", ASTNode.LiteralExpr.Kind.NUMBER)
         );
         ASTNode.InsertStmt stmt = new ASTNode.InsertStmt(
                 1, 1, "student",
@@ -379,7 +382,7 @@ class SemanticAnalyzerTest {
                 add
         );
         SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
-        assertTrue(ex.getMessage().contains("整数类型"));
+        assertTrue(ex.getMessage().contains("数值类型"));
     }
 
     // ========== AND/OR 逻辑运算符类型检查 ==========
@@ -436,7 +439,7 @@ class SemanticAnalyzerTest {
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond);
         SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
         // 右侧的 name+x 会先报算术运算错误（字符串不能做算术）
-        assertTrue(ex.getMessage().contains("整数类型"));
+        assertTrue(ex.getMessage().contains("数值类型"));
     }
 
     @Test
@@ -474,5 +477,108 @@ class SemanticAnalyzerTest {
         ASTNode.DropTableStmt stmt = new ASTNode.DropTableStmt(1, 1, "nonexistent");
         SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
         assertTrue(ex.getMessage().contains("不存在"));
+    }
+
+    // ========== DOUBLE 类型检查 ==========
+
+    @Test
+    void select_doubleColumnComparison_succeeds() {
+        // WHERE score > 3.14 —— DOUBLE 列与 DOUBLE 字面量比较
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "score");
+        ASTNode.LiteralExpr lit = new ASTNode.LiteralExpr(1, 18, "3.14", ASTNode.LiteralExpr.Kind.NUMBER);
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 15, ">", col, lit);
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student",
+                Arrays.asList("id", "score"), cond);
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void select_doubleComparedWithInt_succeeds() {
+        // WHERE score > 90 —— DOUBLE 列与 INT 字面量比较（类型兼容）
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "score");
+        ASTNode.LiteralExpr lit = new ASTNode.LiteralExpr(1, 18, "90", ASTNode.LiteralExpr.Kind.NUMBER);
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 15, ">", col, lit);
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student",
+                Arrays.asList("id"), cond);
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void select_intColumnComparedWithDouble_succeeds() {
+        // WHERE id > 1.5 —— INT 列与 DOUBLE 字面量比较（类型兼容）
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "id");
+        ASTNode.LiteralExpr lit = new ASTNode.LiteralExpr(1, 15, "1.5", ASTNode.LiteralExpr.Kind.NUMBER);
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 12, ">", col, lit);
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student",
+                Arrays.asList("id"), cond);
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void select_doubleArithmetic_succeeds() {
+        // WHERE score + 0.5 > 60 —— DOUBLE 算术运算
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "score");
+        ASTNode.LiteralExpr lit = new ASTNode.LiteralExpr(1, 19, "0.5", ASTNode.LiteralExpr.Kind.NUMBER);
+        ASTNode.BinaryExpr addExpr = new ASTNode.BinaryExpr(1, 15, "+", col, lit);
+        ASTNode.LiteralExpr lit60 = new ASTNode.LiteralExpr(1, 25, "60", ASTNode.LiteralExpr.Kind.NUMBER);
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 22, ">", addExpr, lit60);
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student",
+                Arrays.asList("id"), cond);
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void select_doubleWithString_throwsTypeMismatch() {
+        // WHERE score > 'abc' —— DOUBLE 与 VARCHAR 不兼容
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "score");
+        ASTNode.LiteralExpr lit = new ASTNode.LiteralExpr(1, 18, "abc", ASTNode.LiteralExpr.Kind.STRING);
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 15, ">", col, lit);
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student",
+                Arrays.asList("id"), cond);
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("不兼容") || ex.getMessage().contains("类型"));
+    }
+
+    @Test
+    void insert_doubleValue_succeeds() {
+        catalog.createTableWithTypes("products", Arrays.asList(
+                new CatalogImpl.ColumnInfo("id", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("price", CatalogImpl.DataType.DOUBLE)
+        ));
+        ASTNode.InsertStmt stmt = new ASTNode.InsertStmt(1, 1, "products",
+                Arrays.asList("id", "price"),
+                Arrays.asList(
+                        new ASTNode.LiteralExpr(1, 25, "1", ASTNode.LiteralExpr.Kind.NUMBER),
+                        new ASTNode.LiteralExpr(1, 30, "9.99", ASTNode.LiteralExpr.Kind.NUMBER)
+                ));
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void insert_doubleColumnWithString_throwsTypeMismatch() {
+        catalog.createTableWithTypes("products", Arrays.asList(
+                new CatalogImpl.ColumnInfo("id", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("price", CatalogImpl.DataType.DOUBLE)
+        ));
+        ASTNode.InsertStmt stmt = new ASTNode.InsertStmt(1, 1, "products",
+                Arrays.asList("id", "price"),
+                Arrays.asList(
+                        new ASTNode.LiteralExpr(1, 25, "1", ASTNode.LiteralExpr.Kind.NUMBER),
+                        new ASTNode.LiteralExpr(1, 30, "free", ASTNode.LiteralExpr.Kind.STRING)
+                ));
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("不兼容") || ex.getMessage().contains("类型"));
+    }
+
+    @Test
+    void update_doubleColumn_succeeds() {
+        catalog.createTableWithTypes("products", Arrays.asList(
+                new CatalogImpl.ColumnInfo("id", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("price", CatalogImpl.DataType.DOUBLE)
+        ));
+        Map<String, ASTNode.LiteralExpr> set = new LinkedHashMap<>();
+        set.put("price", new ASTNode.LiteralExpr(1, 20, "19.99", ASTNode.LiteralExpr.Kind.NUMBER));
+        ASTNode.UpdateStmt stmt = new ASTNode.UpdateStmt(1, 1, "products", set, null);
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
     }
 }

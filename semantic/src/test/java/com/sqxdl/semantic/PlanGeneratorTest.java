@@ -1037,4 +1037,129 @@ class PlanGeneratorTest {
         assertTrue(plan instanceof PlanNode.ProjectPlan);
         assertEquals(expectedColumns, ((PlanNode.ProjectPlan) plan).getColumns());
     }
+
+    // ========== DOUBLE 常量折叠 ==========
+
+    @Test
+    void constantFolding_doubleArithmetic() {
+        // WHERE 1.5 + 2.5 > age → WHERE 4.0 > age
+        ASTNode.BinaryExpr add = new ASTNode.BinaryExpr(
+                1, 9, "+", lit(1, 8, "1.5", Kind.NUMBER), lit(1, 14, "2.5", Kind.NUMBER));
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 18, "age");
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 16, ">", add, col);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), cond);
+        PlanNode plan = generator.generate(stmt);
+
+        assertTrue(getChild(plan) instanceof PlanNode.FilterPlan);
+        ASTNode.BinaryExpr filterCond = (ASTNode.BinaryExpr) ((PlanNode.FilterPlan) getChild(plan)).getCondition();
+        assertTrue(filterCond.getLeft() instanceof ASTNode.LiteralExpr);
+        String folded = ((ASTNode.LiteralExpr) filterCond.getLeft()).getValue();
+        // 结果应为 4.0
+        assertEquals(4.0, Double.parseDouble(folded), 0.0001);
+    }
+
+    @Test
+    void constantFolding_mixedIntAndDouble() {
+        // WHERE 2 + 0.5 > age → WHERE 2.5 > age（整数 + 小数 → 小数结果）
+        ASTNode.BinaryExpr add = new ASTNode.BinaryExpr(
+                1, 9, "+", lit(1, 8, "2", Kind.NUMBER), lit(1, 12, "0.5", Kind.NUMBER));
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 17, "age");
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 15, ">", add, col);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), cond);
+        PlanNode plan = generator.generate(stmt);
+
+        assertTrue(getChild(plan) instanceof PlanNode.FilterPlan);
+        ASTNode.BinaryExpr filterCond = (ASTNode.BinaryExpr) ((PlanNode.FilterPlan) getChild(plan)).getCondition();
+        assertTrue(filterCond.getLeft() instanceof ASTNode.LiteralExpr);
+        String folded = ((ASTNode.LiteralExpr) filterCond.getLeft()).getValue();
+        assertEquals(2.5, Double.parseDouble(folded), 0.0001);
+        // 混合运算结果应为小数格式（含小数点）
+        assertTrue(folded.contains("."));
+    }
+
+    @Test
+    void constantFolding_intResult_staysInt() {
+        // WHERE 2 + 3 > age → WHERE 5 > age（两个整数，结果为整数）
+        ASTNode.BinaryExpr add = new ASTNode.BinaryExpr(
+                1, 9, "+", lit(1, 8, "2", Kind.NUMBER), lit(1, 12, "3", Kind.NUMBER));
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 16, "age");
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, ">", add, col);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), cond);
+        PlanNode plan = generator.generate(stmt);
+
+        assertTrue(getChild(plan) instanceof PlanNode.FilterPlan);
+        ASTNode.BinaryExpr filterCond = (ASTNode.BinaryExpr) ((PlanNode.FilterPlan) getChild(plan)).getCondition();
+        assertTrue(filterCond.getLeft() instanceof ASTNode.LiteralExpr);
+        assertEquals("5", ((ASTNode.LiteralExpr) filterCond.getLeft()).getValue());
+    }
+
+    @Test
+    void constantFolding_doubleComparison_true() {
+        // WHERE 3.14 > 2.5 → TRUE → 无 Filter
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(
+                1, 10, ">", lit(1, 9, "3.14", Kind.NUMBER), lit(1, 16, "2.5", Kind.NUMBER));
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), cond);
+        PlanNode plan = generator.generate(stmt);
+
+        assertTrue(getChild(plan) instanceof PlanNode.SeqScanPlan);
+    }
+
+    @Test
+    void constantFolding_doubleComparison_false() {
+        // WHERE 1.5 > 2.5 → FALSE → Filter(FALSE)
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(
+                1, 10, ">", lit(1, 9, "1.5", Kind.NUMBER), lit(1, 15, "2.5", Kind.NUMBER));
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), cond);
+        PlanNode plan = generator.generate(stmt);
+
+        assertTrue(getChild(plan) instanceof PlanNode.FilterPlan);
+    }
+
+    @Test
+    void toJson_doubleLiteralInInsert() {
+        // INSERT INTO student VALUES ... 含小数值
+        catalog.createTableWithTypes("products", Arrays.asList(
+                new CatalogImpl.ColumnInfo("id", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("price", CatalogImpl.DataType.DOUBLE)
+        ));
+        ASTNode.InsertStmt stmt = new ASTNode.InsertStmt(1, 1, "products",
+                Arrays.asList("id", "price"),
+                Arrays.asList(
+                        lit(1, 25, "1", Kind.NUMBER),
+                        lit(1, 30, "9.99", Kind.NUMBER)
+                ));
+        PlanNode plan = generator.generate(stmt);
+        String json = generator.toJson(plan);
+
+        // 9.99 应在 JSON 中作为原生数字输出（无引号）
+        assertTrue(json.contains("9.99"));
+        assertFalse(json.contains("\"9.99\"")); // 不应被引号包裹
+    }
+
+    @Test
+    void toJson_doubleLiteralInCondition() {
+        // WHERE score > 3.14 → JSON 中 3.14 为原生数字
+        catalog.createTableWithTypes("scores", Arrays.asList(
+                new CatalogImpl.ColumnInfo("score", CatalogImpl.DataType.DOUBLE)
+        ));
+        ASTNode.IdentifierExpr col = new ASTNode.IdentifierExpr(1, 10, "score");
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 15, ">",
+                col, lit(1, 18, "3.14", Kind.NUMBER));
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "scores", Arrays.asList("score"), cond);
+        PlanNode plan = generator.generate(stmt);
+        String json = generator.toJson(plan);
+
+        assertTrue(json.contains("\"value\":3.14"));
+    }
 }
