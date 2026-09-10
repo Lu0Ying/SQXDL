@@ -46,7 +46,7 @@ const Row &Table::row(size_t index) const
 {
     if (index >= rows_.size())
     {
-        throw StorageError("INTERNAL_ERROR", "行索引越界: " + std::to_string(index));
+        throw StorageError("INTERNAL_ERROR", "Row index out of range: " + std::to_string(index));
     }
     return rows_[index];
 }
@@ -55,7 +55,7 @@ Row &Table::row(size_t index)
 {
     if (index >= rows_.size())
     {
-        throw StorageError("INTERNAL_ERROR", "行索引越界: " + std::to_string(index));
+        throw StorageError("INTERNAL_ERROR", "Row index out of range: " + std::to_string(index));
     }
     return rows_[index];
 }
@@ -81,16 +81,17 @@ size_t Table::column_index(const std::string &name) const
             return i;
         }
     }
-    throw StorageError("COLUMN_NOT_FOUND", "列 " + name + " 不存在");
+    throw StorageError("COLUMN_NOT_FOUND", "Column " + name + " not found");
 }
 
 void Table::append_row(Row row)
 {
     if (row.size() != columns_.size())
     {
-        throw StorageError("INVALID_PLAN",
-                           "插入字段数 " + std::to_string(row.size()) + " 与列数 " +
-                               std::to_string(columns_.size()) + " 不一致");
+        throw StorageError("INTERNAL_ERROR",
+                           "Insert value count " + std::to_string(row.size()) +
+                               " does not match column count " +
+                               std::to_string(columns_.size()));
     }
     rows_.push_back(std::move(row));
 }
@@ -99,7 +100,7 @@ void Table::remove_row(size_t index)
 {
     if (index >= rows_.size())
     {
-        throw StorageError("INTERNAL_ERROR", "行索引越界: " + std::to_string(index));
+        throw StorageError("INTERNAL_ERROR", "Row index out of range: " + std::to_string(index));
     }
     rows_.erase(rows_.begin() + static_cast<std::ptrdiff_t>(index));
 }

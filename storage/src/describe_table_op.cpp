@@ -13,7 +13,7 @@ nlohmann::json execute_describe_table(const nlohmann::json &plan)
         if (!plan.contains("table") || !plan.at("table").is_string() ||
             plan.at("table").get<std::string>().empty())
         {
-            throw StorageError("INVALID_PLAN", "缺少或非法的字符串字段 table");
+            throw StorageError("INVALID_PLAN", "Missing or invalid string field: table");
         }
         const Table &table = Database::instance().get_table(plan.at("table").get<std::string>());
 

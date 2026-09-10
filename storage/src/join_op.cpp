@@ -44,7 +44,7 @@ JoinType parse_join_type(const nlohmann::json &plan)
     {
         return JoinType::Cross;
     }
-    throw StorageError("INVALID_PLAN", "不支持的 join 类型: " + type);
+    throw StorageError("INVALID_PLAN", "Unsupported join type: " + type);
 }
 
 // 推导一侧的别名：节点上的 alias 优先，其次 scan 用表名，filter/project 递归 child
@@ -58,7 +58,7 @@ std::string side_alias(const nlohmann::json &plan, const std::string &fallback)
     {
         if (!plan.at("alias").is_string() || plan.at("alias").get<std::string>().empty())
         {
-            throw StorageError("INVALID_PLAN", "alias 必须是非空字符串");
+            throw StorageError("INVALID_PLAN", "alias must be a non-empty string");
         }
         return plan.at("alias").get<std::string>();
     }
@@ -84,7 +84,7 @@ std::vector<std::string> result_columns(const nlohmann::json &result, const char
     if (!result.contains("columns") || !result.at("columns").is_array() ||
         !result.contains("rows") || !result.at("rows").is_array())
     {
-        throw StorageError("INVALID_PLAN", std::string(who) + " 未返回合法数据集");
+        throw StorageError("INVALID_PLAN", std::string(who) + " did not return a valid result set");
     }
     std::vector<std::string> names;
     names.reserve(result.at("columns").size());
@@ -92,7 +92,7 @@ std::vector<std::string> result_columns(const nlohmann::json &result, const char
     {
         if (!column.is_string())
         {
-            throw StorageError("INVALID_PLAN", "数据集列名必须是字符串");
+            throw StorageError("INVALID_PLAN", "Result set column names must be strings");
         }
         names.push_back(column.get<std::string>());
     }
@@ -106,7 +106,7 @@ void check_row_width(const nlohmann::json &result, size_t width, const char *who
     {
         if (!row.is_array() || row.size() != width)
         {
-            throw StorageError("INTERNAL_ERROR", std::string(who) + " 数据集行与列定义不一致");
+            throw StorageError("INTERNAL_ERROR", std::string(who) + " result set rows do not match column definitions");
         }
     }
 }
@@ -120,11 +120,11 @@ nlohmann::json execute_join(const nlohmann::json &plan)
     {
         if (!plan.is_object())
         {
-            throw StorageError("INVALID_PLAN", "join 计划必须是 JSON 对象");
+            throw StorageError("INVALID_PLAN", "join plan must be a JSON object");
         }
         if (!plan.contains("left") || !plan.contains("right"))
         {
-            throw StorageError("INVALID_PLAN", "join 缺少 left/right 子计划");
+            throw StorageError("INVALID_PLAN", "join is missing left/right sub-plans");
         }
         const JoinType type = parse_join_type(plan);
 
@@ -134,14 +134,14 @@ nlohmann::json execute_join(const nlohmann::json &plan)
         {
             if (plan.contains("condition"))
             {
-                throw StorageError("INVALID_PLAN", "cross join 不应包含 condition");
+                throw StorageError("INVALID_PLAN", "cross join should not contain condition");
             }
         }
         else
         {
             if (!plan.contains("condition"))
             {
-                throw StorageError("INVALID_PLAN", "join 缺少 condition");
+                throw StorageError("INVALID_PLAN", "join is missing condition");
             }
             condition = parse_expression(plan.at("condition"));
         }
@@ -157,10 +157,10 @@ nlohmann::json execute_join(const nlohmann::json &plan)
             return right; // 传播右子节点错误
         }
 
-        const std::vector<std::string> left_names = result_columns(left, "join 的 left");
-        const std::vector<std::string> right_names = result_columns(right, "join 的 right");
-        check_row_width(left, left_names.size(), "join 的 left");
-        check_row_width(right, right_names.size(), "join 的 right");
+        const std::vector<std::string> left_names = result_columns(left, "join left");
+        const std::vector<std::string> right_names = result_columns(right, "join right");
+        check_row_width(left, left_names.size(), "join left");
+        check_row_width(right, right_names.size(), "join right");
 
         const std::string left_alias = side_alias(plan.at("left"), "left");
         const std::string right_alias = side_alias(plan.at("right"), "right");
@@ -184,7 +184,8 @@ nlohmann::json execute_join(const nlohmann::json &plan)
             if (!seen.insert(name).second)
             {
                 throw StorageError("INVALID_PLAN",
-                                   "连接结果列名重复: " + name + "（可为两侧设置 alias 以区分）");
+                                   "Duplicate column name in join result: " + name +
+                                       " (set alias on either side to disambiguate)");
             }
         }
 

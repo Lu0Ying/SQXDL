@@ -14,13 +14,13 @@ nlohmann::json execute_insert(const nlohmann::json &plan)
         if (!plan.contains("table") || !plan.at("table").is_string() ||
             plan.at("table").get<std::string>().empty())
         {
-            throw StorageError("INVALID_PLAN", "缺少或非法的字符串字段 table");
+            throw StorageError("INVALID_PLAN", "Missing or invalid string field: table");
         }
         Table &table = Database::instance().get_table(plan.at("table").get<std::string>());
 
         if (!plan.contains("values") || !plan.at("values").is_array())
         {
-            throw StorageError("INVALID_PLAN", "insert 缺少 values 数组");
+            throw StorageError("INVALID_PLAN", "insert is missing values array");
         }
         Row row = Row::from_json(plan.at("values"));
 
@@ -30,7 +30,7 @@ nlohmann::json execute_insert(const nlohmann::json &plan)
         {
             if (row.size() != columns.size())
             {
-                throw StorageError("INVALID_PLAN", "columns 与 values 数量不一致");
+                throw StorageError("INVALID_PLAN", "columns and values have different sizes");
             }
             Row full_row; // 先按表列数填 NULL，再按列名赋值
             for (size_t i = 0; i < table.columns().size(); ++i)
@@ -41,7 +41,7 @@ nlohmann::json execute_insert(const nlohmann::json &plan)
             {
                 if (!columns[i].is_string())
                 {
-                    throw StorageError("INVALID_PLAN", "columns 元素必须是列名");
+                    throw StorageError("INVALID_PLAN", "columns elements must be column names");
                 }
                 const size_t index = table.column_index(columns[i].get<std::string>());
                 full_row.at(index) = row.at(i);

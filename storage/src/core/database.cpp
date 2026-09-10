@@ -37,14 +37,14 @@ namespace
             if (ec)
             {
                 throw StorageError("INTERNAL_ERROR",
-                                   "无法访问存储目录 " + path.string() + ": " + ec.message());
+                                   "Failed to access storage directory " + path.string() + ": " + ec.message());
             }
             return nlohmann::json::object();
         }
         std::ifstream in(path);
         if (!in.is_open())
         {
-            throw StorageError("INTERNAL_ERROR", "无法打开目录文件 " + path.string());
+            throw StorageError("INTERNAL_ERROR", "Failed to open catalog file " + path.string());
         }
         nlohmann::json catalog;
         try
@@ -53,11 +53,11 @@ namespace
         }
         catch (const std::exception &)
         {
-            throw StorageError("INTERNAL_ERROR", "目录文件损坏，无法解析: " + path.string());
+            throw StorageError("INTERNAL_ERROR", "Catalog file is corrupted (parse failed): " + path.string());
         }
         if (!catalog.is_object())
         {
-            throw StorageError("INTERNAL_ERROR", "目录文件格式非法: " + path.string());
+            throw StorageError("INTERNAL_ERROR", "Catalog file has invalid format: " + path.string());
         }
         return catalog;
     }
@@ -83,7 +83,7 @@ Table &Database::get_table(const std::string &name)
     auto it = tables_.find(name);
     if (it == tables_.end())
     {
-        throw StorageError("TABLE_NOT_FOUND", "表 " + name + " 不存在");
+        throw StorageError("TABLE_NOT_FOUND", "Table " + name + " not found");
     }
     return it->second;
 }
@@ -94,7 +94,7 @@ const Table &Database::get_table(const std::string &name) const
     auto it = tables_.find(name);
     if (it == tables_.end())
     {
-        throw StorageError("TABLE_NOT_FOUND", "表 " + name + " 不存在");
+        throw StorageError("TABLE_NOT_FOUND", "Table " + name + " not found");
     }
     return it->second;
 }
@@ -104,7 +104,7 @@ void Database::create_table(const std::string &name, std::vector<Column> columns
     ensure_loaded();
     if (tables_.find(name) != tables_.end())
     {
-        throw StorageError("TABLE_ALREADY_EXISTS", "表 " + name + " 已存在");
+        throw StorageError("TABLE_ALREADY_EXISTS", "Table " + name + " already exists");
     }
     tables_.emplace(name, Table(name, std::move(columns)));
     try
@@ -124,7 +124,7 @@ void Database::drop_table(const std::string &name)
     auto it = tables_.find(name);
     if (it == tables_.end())
     {
-        throw StorageError("TABLE_NOT_FOUND", "表 " + name + " 不存在");
+        throw StorageError("TABLE_NOT_FOUND", "Table " + name + " not found");
     }
     Table removed = std::move(it->second);
     tables_.erase(it);
@@ -182,7 +182,7 @@ void Database::ensure_loaded() const
             entry.is_array() ? entry : entry.value("columns", nlohmann::json());
         if (!columns_json.is_array())
         {
-            throw StorageError("INTERNAL_ERROR", "目录文件中表 " + name + " 的列定义非法");
+            throw StorageError("INTERNAL_ERROR", "Invalid column definition for table " + name + " in catalog file");
         }
         std::vector<Column> columns;
         try
@@ -191,7 +191,7 @@ void Database::ensure_loaded() const
         }
         catch (const StorageError &)
         {
-            throw StorageError("INTERNAL_ERROR", "目录文件中表 " + name + " 的列定义损坏");
+            throw StorageError("INTERNAL_ERROR", "Corrupted column definition for table " + name + " in catalog file");
         }
         Table table(name, std::move(columns));
         if (!entry.is_array() && entry.contains("rows") && entry.at("rows").is_array() &&
@@ -205,7 +205,7 @@ void Database::ensure_loaded() const
                 }
                 catch (const StorageError &)
                 {
-                    throw StorageError("INTERNAL_ERROR", "目录文件中表 " + name + " 的行数据损坏");
+                    throw StorageError("INTERNAL_ERROR", "Corrupted row data for table " + name + " in catalog file");
                 }
             }
             migrate_tables.insert(name);
@@ -248,7 +248,7 @@ void Database::save_catalog() const
     if (ec)
     {
         throw StorageError("INTERNAL_ERROR",
-                           "无法创建存储目录 " + data_dir().string() + ": " + ec.message());
+                           "Failed to create storage directory " + data_dir().string() + ": " + ec.message());
     }
     nlohmann::json catalog = nlohmann::json::object();
     for (const auto &entry : tables_)
@@ -263,13 +263,13 @@ void Database::save_catalog() const
     std::ofstream out(catalog_path(), std::ios::trunc);
     if (!out.is_open())
     {
-        throw StorageError("INTERNAL_ERROR", "无法写入目录文件 " + catalog_path().string());
+        throw StorageError("INTERNAL_ERROR", "Failed to open catalog file for writing " + catalog_path().string());
     }
     out << catalog.dump(2);
     out.close();
     if (!out)
     {
-        throw StorageError("INTERNAL_ERROR", "写入目录文件失败 " + catalog_path().string());
+        throw StorageError("INTERNAL_ERROR", "Failed to write catalog file " + catalog_path().string());
     }
 }
 

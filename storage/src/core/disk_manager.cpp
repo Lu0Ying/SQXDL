@@ -26,7 +26,7 @@ DiskManager::DiskManager(const std::string &db_file)
     }
     if (!file_.is_open())
     {
-        throw StorageError("INTERNAL_ERROR", "无法打开数据库文件: " + db_file_);
+        throw StorageError("INTERNAL_ERROR", "Failed to open database file: " + db_file_);
     }
     load_header();
 }
@@ -51,7 +51,7 @@ void DiskManager::read_page(page_id_t page_id, char *data)
 {
     if (!is_valid_page(page_id))
     {
-        throw StorageError("INTERNAL_ERROR", "读取非法页号: " + std::to_string(page_id));
+        throw StorageError("INTERNAL_ERROR", "Invalid page id for read: " + std::to_string(page_id));
     }
     file_.clear();
     file_.seekg(static_cast<std::streamoff>(page_id) * PAGE_SIZE, std::ios::beg);
@@ -59,7 +59,8 @@ void DiskManager::read_page(page_id_t page_id, char *data)
     if (file_.gcount() != static_cast<std::streamsize>(PAGE_SIZE))
     {
         throw StorageError("INTERNAL_ERROR",
-                           "读取页 " + std::to_string(page_id) + " 失败（文件损坏或被截断）");
+                           "Failed to read page " + std::to_string(page_id) +
+                               " (file corrupted or truncated)");
     }
 }
 
@@ -67,14 +68,14 @@ void DiskManager::write_page(page_id_t page_id, const char *data)
 {
     if (!is_valid_page(page_id))
     {
-        throw StorageError("INTERNAL_ERROR", "写入非法页号: " + std::to_string(page_id));
+        throw StorageError("INTERNAL_ERROR", "Invalid page id for write: " + std::to_string(page_id));
     }
     file_.clear();
     file_.seekp(static_cast<std::streamoff>(page_id) * PAGE_SIZE, std::ios::beg);
     file_.write(data, PAGE_SIZE);
     if (!file_)
     {
-        throw StorageError("INTERNAL_ERROR", "写入页 " + std::to_string(page_id) + " 失败");
+        throw StorageError("INTERNAL_ERROR", "Failed to write page " + std::to_string(page_id));
     }
 }
 
@@ -104,15 +105,15 @@ void DiskManager::deallocate_page(page_id_t page_id)
 {
     if (!is_valid_page(page_id))
     {
-        throw StorageError("INTERNAL_ERROR", "回收非法页号: " + std::to_string(page_id));
+        throw StorageError("INTERNAL_ERROR", "Invalid page id for deallocation: " + std::to_string(page_id));
     }
     if (free_pages_.find(page_id) != free_pages_.end())
     {
-        throw StorageError("INTERNAL_ERROR", "页已被回收: " + std::to_string(page_id));
+        throw StorageError("INTERNAL_ERROR", "Page already deallocated: " + std::to_string(page_id));
     }
     if (free_pages_.size() >= MAX_FREE_PAGE_ENTRIES)
     {
-        throw StorageError("INTERNAL_ERROR", "空闲页表超出头页容量上限");
+        throw StorageError("INTERNAL_ERROR", "Free page table exceeds header page capacity limit");
     }
     free_pages_.insert(page_id);
     write_header();
@@ -159,7 +160,7 @@ void DiskManager::write_header()
     file_.write(buffer, PAGE_SIZE);
     if (!file_)
     {
-        throw StorageError("INTERNAL_ERROR", "写入数据库文件头失败: " + db_file_);
+        throw StorageError("INTERNAL_ERROR", "Failed to write database file header: " + db_file_);
     }
     file_.flush();
 }
@@ -179,7 +180,7 @@ void DiskManager::load_header()
     }
     if (file_size < static_cast<std::streamoff>(PAGE_SIZE))
     {
-        throw StorageError("INTERNAL_ERROR", "数据库文件损坏（小于一页）: " + db_file_);
+        throw StorageError("INTERNAL_ERROR", "Database file corrupted (smaller than one page): " + db_file_);
     }
     char buffer[PAGE_SIZE];
     file_.clear();
@@ -188,13 +189,13 @@ void DiskManager::load_header()
     if (file_.gcount() != static_cast<std::streamsize>(PAGE_SIZE) ||
         std::memcmp(buffer + 0, MAGIC, sizeof(MAGIC)) != 0)
     {
-        throw StorageError("INTERNAL_ERROR", "数据库文件格式非法（魔数不匹配）: " + db_file_);
+        throw StorageError("INTERNAL_ERROR", "Invalid database file format (magic mismatch): " + db_file_);
     }
     uint32_t version = 0;
     std::memcpy(&version, buffer + 4, sizeof(version));
     if (version != DISK_FORMAT_VERSION)
     {
-        throw StorageError("INTERNAL_ERROR", "数据库文件版本不支持: " + std::to_string(version));
+        throw StorageError("INTERNAL_ERROR", "Unsupported database file version: " + std::to_string(version));
     }
     uint32_t free_count = 0;
     std::memcpy(&page_count_, buffer + 8, sizeof(page_count_));
@@ -202,7 +203,7 @@ void DiskManager::load_header()
     if (page_count_ < 1 || free_count > MAX_FREE_PAGE_ENTRIES ||
         free_count >= page_count_)
     {
-        throw StorageError("INTERNAL_ERROR", "数据库文件头损坏: " + db_file_);
+        throw StorageError("INTERNAL_ERROR", "Database file header corrupted: " + db_file_);
     }
     free_pages_.clear();
     size_t offset = 16;
@@ -213,7 +214,7 @@ void DiskManager::load_header()
         offset += sizeof(id);
         if (!is_valid_page(id))
         {
-            throw StorageError("INTERNAL_ERROR", "数据库文件头损坏（非法空闲页号）");
+            throw StorageError("INTERNAL_ERROR", "Database file header corrupted (invalid free page id)");
         }
         free_pages_.insert(id);
     }

@@ -13,23 +13,23 @@ nlohmann::json execute_project(const nlohmann::json &plan)
     {
         if (!plan.is_object())
         {
-            throw StorageError("INVALID_PLAN", "project 计划必须是 JSON 对象");
+            throw StorageError("INVALID_PLAN", "project plan must be a JSON object");
         }
         if (!plan.contains("child"))
         {
-            throw StorageError("INVALID_PLAN", "project 缺少 child");
+            throw StorageError("INVALID_PLAN", "project is missing child");
         }
         if (!plan.contains("columns") || !plan.at("columns").is_array() ||
             plan.at("columns").empty())
         {
-            throw StorageError("INVALID_PLAN", "project 需要非空的 columns 数组");
+            throw StorageError("INVALID_PLAN", "project requires a non-empty columns array");
         }
         const nlohmann::json &columns = plan.at("columns");
         for (const auto &column : columns)
         {
             if (!column.is_string())
             {
-                throw StorageError("INVALID_PLAN", "project 的列名必须是字符串");
+                throw StorageError("INVALID_PLAN", "project column names must be strings");
             }
         }
 
@@ -42,7 +42,7 @@ nlohmann::json execute_project(const nlohmann::json &plan)
             !child.contains("rows") || !child.at("columns").is_array() ||
             !child.at("rows").is_array())
         {
-            throw StorageError("INVALID_PLAN", "project 的 child 未返回合法数据集");
+            throw StorageError("INVALID_PLAN", "project child did not return a valid result set");
         }
 
         // 定位每一被投影列在 child 数据集中的下标
@@ -63,7 +63,7 @@ nlohmann::json execute_project(const nlohmann::json &plan)
             }
             if (index == child_columns.size())
             {
-                throw StorageError("COLUMN_NOT_FOUND", "列 " + name + " 不存在");
+                throw StorageError("COLUMN_NOT_FOUND", "Column " + name + " not found");
             }
             indices.push_back(index);
         }
@@ -73,7 +73,7 @@ nlohmann::json execute_project(const nlohmann::json &plan)
         {
             if (!row_json.is_array() || row_json.size() != child_columns.size())
             {
-                throw StorageError("INTERNAL_ERROR", "数据集行与列定义不一致");
+                throw StorageError("INTERNAL_ERROR", "Result set rows do not match column definitions");
             }
             nlohmann::json row = nlohmann::json::array();
             for (const size_t index : indices)
@@ -87,8 +87,7 @@ nlohmann::json execute_project(const nlohmann::json &plan)
             {"success", true},
             {"type", "resultset"},
             {"columns", columns},
-            {"rows", std::move(projected)}
-        };
+            {"rows", std::move(projected)}};
     }
     catch (const StorageError &e)
     {

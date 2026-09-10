@@ -23,7 +23,7 @@ public class Lexer {
             "SELECT", "FROM", "WHERE", "CREATE", "TABLE", "TABLES",
             "INSERT", "INTO", "VALUES", "DELETE", "UPDATE", "SET",
             "AND", "OR", "NOT", "TRUE", "FALSE",
-            "INT", "VARCHAR", "SHOW");
+            "INT", "VARCHAR", "SHOW", "DROP");
 
     /** 双字符运算符，需先于单字符判断 */
     private static final Set<String> TWO_CHAR_OPERATORS = Set.of("<=", ">=", "!=", "==", "&&", "||");

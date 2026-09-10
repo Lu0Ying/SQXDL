@@ -20,7 +20,7 @@ const Value &Row::at(size_t index) const
 {
     if (index >= values_.size())
     {
-        throw StorageError("INTERNAL_ERROR", "行索引越界: " + std::to_string(index));
+        throw StorageError("INTERNAL_ERROR", "Row index out of range: " + std::to_string(index));
     }
     return values_[index];
 }
@@ -29,7 +29,7 @@ Value &Row::at(size_t index)
 {
     if (index >= values_.size())
     {
-        throw StorageError("INTERNAL_ERROR", "行索引越界: " + std::to_string(index));
+        throw StorageError("INTERNAL_ERROR", "Row index out of range: " + std::to_string(index));
     }
     return values_[index];
 }
@@ -43,7 +43,7 @@ Row Row::from_json(const nlohmann::json &array)
 {
     if (!array.is_array())
     {
-        throw StorageError("INVALID_PLAN", "行数据必须是 JSON 数组");
+        throw StorageError("INVALID_PLAN", "Row data must be a JSON array");
     }
     Row row;
     for (const auto &element : array)

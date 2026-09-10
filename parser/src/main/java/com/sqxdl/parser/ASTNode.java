@@ -387,10 +387,9 @@ public abstract class ASTNode {
         }
     }
 
-
     /**
-     * DROP TABLE 语句节点，对应语法：DROP TABLE tableName
-     * 删除指定表及其数据。
+     * DROP TABLE 语句节点，对应语法：DROP TABLE tableName。
+     * 语义层据此删除指定表及其数据。
      */
     public static class DropTableStmt extends ASTNode {
 

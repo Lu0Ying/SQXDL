@@ -81,6 +81,7 @@ ShowStmt
 | DELETE | `DELETE FROM 表名 [WHERE 条件]` |
 | CREATE TABLE | `CREATE TABLE 表名 (列名 INT\|VARCHAR [, 列名 INT\|VARCHAR]*)` |
 | SHOW | `SHOW TABLES`（列出全部表）\| `SHOW TABLE 表名`（查看指定表结构） |
+| DROP TABLE | `DROP TABLE 表名`（删除指定表及其数据，与 CREATE TABLE 对称） |
 
 WHERE 条件表达式按优先级解析（低 → 高）：
 `OR (||)` < `AND (&&)` < `NOT` < 比较（`=` `<` `>` `<=` `>=` `!=` `==`）< `+` `-` < `*` `/` < 原子（含 `( 表达式 )`）。
@@ -107,6 +108,7 @@ WHERE 条件表达式按优先级解析（低 → 高）：
 | `DeleteStmt` | `tableName`、`whereCond` | 同上，`whereCond` 可为 `null` |
 | `CreateTableStmt` | `tableName`、`columns` | `columns` 为 `List<ColumnDef>`（`ColumnDef` 含 `name` 与 `type`） |
 | `ShowStmt` | `target`、`tableName` | `target` ∈ `TABLES` / `TABLE`；`target=TABLE` 时 `tableName` 为表名，否则为 `null` |
+| `DropTableStmt` | `tableName` | 语义层据此删除指定表及其数据 |
 | `BinaryExpr` | `op`、`left`、`right` | 表达式节点，`left`/`right` 可为嵌套表达式 |
 | `UnaryExpr` | `op`、`operand` | 一元运算（`NOT`），`operand` 为被作用表达式 |
 | `IdentifierExpr` | `name` | 标识符（列名）引用，WHERE 中的列名一律用此节点 |
@@ -124,6 +126,7 @@ WHERE 条件表达式按优先级解析（低 → 高）：
 5. **`CreateTableStmt` 列带类型**：`CREATE TABLE t (id INT)` 的 `columns` 是 `ColumnDef(name, type)` 列表；语义层如需列名请取 `ColumnDef::getName`，`ColumnDef::getType` 提供列类型。
 6. **常量已折叠**：Parser 已把 `age = 1+2` 化简为 `age = 3`、`cond AND true` 化简为 `cond`（见下文），B 组看到的 WHERE 树是优化后的结果。
 7. **`ShowStmt` 两种形态**：`SHOW TABLES` → `target=TABLES`、`tableName=null`（语义层查全部表清单）；`SHOW TABLE t` → `target=TABLE`、`tableName=t`（语义层查指定表结构）。`target` 统一存大写。
+8. **`DropTableStmt`**：仅含 `tableName`，语义层删除表及其数据；无 IF EXISTS 支持，表不存在由语义层报错。
 
 ## 错误处理
 
@@ -165,4 +168,4 @@ Parser 在构建 WHERE 表达式树后立即做两层优化（后序遍历）：
 mvn -pl parser test
 ```
 
-`LexerTest`（23 例）覆盖五类 Token、注释、转义、行列号、拼写纠错与非法输入；`ParserTest`（58 例）覆盖六类语句（含 SHOW）、表达式优先级（含课程示例 `a = 1 OR b = 2 AND c = 3`）、NOT/括号、列类型、常量折叠、逻辑简化、错误格式（`unexpected token` + 期望终结符列表）、错误恢复与多语句输入。共 81 例。
+`LexerTest`（23 例）覆盖五类 Token、注释、转义、行列号、拼写纠错与非法输入；`ParserTest`（61 例）覆盖七类语句（含 SHOW、DROP TABLE）、表达式优先级（含课程示例 `a = 1 OR b = 2 AND c = 3`）、NOT/括号、列类型、常量折叠、逻辑简化、错误格式（`unexpected token` + 期望终结符列表）、错误恢复与多语句输入。共 84 例。

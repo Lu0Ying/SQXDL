@@ -69,11 +69,14 @@ public class Parser {
                 case "SHOW" -> {
                     return parseShow();
                 }
+                case "DROP" -> {
+                    return parseDropTable();
+                }
                 default -> {
                 }
             }
         }
-        throw syntaxError(t, "SELECT | INSERT | UPDATE | DELETE | CREATE | SHOW");
+        throw syntaxError(t, "SELECT | INSERT | UPDATE | DELETE | CREATE | SHOW | DROP");
     }
 
     /**
@@ -87,7 +90,7 @@ public class Parser {
         Token t = peek();
         boolean nextStatement = t.getType() == Token.Type.KEYWORD;
         if (t.getType() != Token.Type.EOF && !nextStatement) {
-            throw syntaxError(t, "';' | EOF | SELECT | INSERT | UPDATE | DELETE | CREATE | SHOW");
+            throw syntaxError(t, "';' | EOF | SELECT | INSERT | UPDATE | DELETE | CREATE | SHOW | DROP");
         }
     }
 
@@ -171,6 +174,20 @@ public class Parser {
         finishStatement();
         return new ASTNode.ShowStmt(start.getLine(), start.getCol(),
                 target.getLexeme().toUpperCase(), tableName);
+    }
+
+    /**
+     * 解析 DROP TABLE 语句：DROP TABLE tableName。
+     * 与 CREATE TABLE 对称，语义层据此删除表及其数据。
+     *
+     * @return DropTableStmt 节点
+     */
+    private ASTNode parseDropTable() {
+        Token start = expectKeyword("DROP");
+        expectKeyword("TABLE");
+        Token table = expect(Token.Type.IDENTIFIER);
+        finishStatement();
+        return new ASTNode.DropTableStmt(start.getLine(), start.getCol(), table.getLexeme());
     }
 
     /**
