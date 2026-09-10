@@ -3,7 +3,7 @@
 
 #include "nlohmann/json.hpp"
 
-// 全表扫描：返回空数据集（默认成功）
+// 全表扫描：返回整表数据（数据集，列 = 表列、行 = 表行）
 nlohmann::json execute_scan(const nlohmann::json& plan);
 
 #endif

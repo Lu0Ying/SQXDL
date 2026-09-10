@@ -9,26 +9,21 @@ nlohmann::json execute_create_table(const nlohmann::json &plan)
 {
     try
     {
-        if (!plan.contains("table") || !plan["table"].is_string())
+        if (!plan.contains("table") || !plan.at("table").is_string() ||
+            plan.at("table").get<std::string>().empty())
         {
-            throw StorageError("INVALID_PLAN", "createTable 需要字符串字段 table");
+            throw StorageError("INVALID_PLAN", "缺少或非法的字符串字段 table");
         }
-        if (!plan.contains("columns"))
-        {
-            throw StorageError("INVALID_PLAN", "createTable 需要字段 columns");
-        }
-        Database::instance().create_table(plan["table"].get<std::string>(),
-                                          columns_from_json(plan["columns"]));
+        const std::string table = plan.at("table").get<std::string>();
+
+        std::vector<Column> columns = columns_from_json(plan.value("columns", nlohmann::json()));
+        Database::instance().create_table(table, std::move(columns));
     }
     catch (const StorageError &e)
     {
-        return {
-            {"success", false},
-            {"type", "error"},
-            {"error", {{"code", e.code()}, {"message", e.what()}}}};
+        return {{"success", false},
+                {"type", "error"},
+                {"error", {{"code", e.code()}, {"message", e.what()}}}};
     }
-    return {
-        {"success", true},
-        {"type", "rowcount"},
-        {"rowsAffected", 0}};
+    return {{"success", true}, {"type", "rowcount"}, {"rowsAffected", 0}};
 }

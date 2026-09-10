@@ -3,7 +3,7 @@
 
 #include "nlohmann/json.hpp"
 
-// 按条件过滤：返回空数据集（默认成功）
+// 按条件过滤（对应 WHERE）：对 child 数据集逐行求值 condition，返回结果集
 nlohmann::json execute_filter(const nlohmann::json& plan);
 
 #endif
