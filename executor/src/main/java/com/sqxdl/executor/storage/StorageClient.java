@@ -122,6 +122,11 @@ public class StorageClient {
         return process;
     }
 
+    /** 显式结束存储服务会话：协议 exit 正常落盘退出（幂等） */
+    public void close() {
+        closeSession();
+    }
+
     /** 关闭当前会话：先发协议 exit 让核心正常落盘，超时再强杀（幂等） */
     private void closeSession() {
         if (process != null) {

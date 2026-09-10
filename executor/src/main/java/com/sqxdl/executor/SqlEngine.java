@@ -25,14 +25,13 @@ import java.util.Map;
  * 存储核心（storage_core.exe）不可用时回退内置示例数据模拟执行，
  * 保证 Demo 脱离 C++ 存储程序也能完整演示。
  */
-public class SqlEngine {
+public class SqlEngine implements AutoCloseable {
 
     /**
      * 执行模式：
-     * AUTO —— 优先真实存储核心（storage_core.exe），不可用时回退本地模拟；
-     * LOCAL —— 始终本地模拟执行（数据保存在 JVM 内），供 GUI 演示使用。
-     * 说明：当前存储核心每次调用都是独立进程、无持久化，
-     *       数据无法跨语句保留，故界面演示使用 LOCAL 保证效果。
+     * AUTO —— 优先真实存储核心（storage_core.exe，服务式会话，数据落盘持久化），
+     *         不可用时回退本地模拟；
+     * LOCAL —— 始终本地模拟执行（数据保存在 JVM 内，仅供离线演示）。
      */
     public enum Mode { AUTO, LOCAL }
 
@@ -85,6 +84,9 @@ public class SqlEngine {
     /** 最近一次执行是否回退到模拟模式；null 表示走了真实存储 */
     private String fallbackReason;
 
+    /** 存储核心是否可用（AUTO 模式下构造阶段探测） */
+    private boolean storageAvailable;
+
     /** 默认 AUTO 模式：优先真实存储核心 */
     public SqlEngine() {
         this(Mode.AUTO);
@@ -92,19 +94,24 @@ public class SqlEngine {
 
     public SqlEngine(Mode mode) {
         this.mode = mode;
-        initSampleData();
-        // 把示例表的列名与类型注册进数据字典，语义分析即可做真实校验
-        tables.forEach((name, data) -> catalog.createTableWithTypes(name, data.columns));
-        // AUTO 模式启动时与存储核心同步表结构（B 组方案 B）；
-        // 核心未报告任何表（如骨架阶段 showTables 为空）时跳过，保留内置示例数据
-        if (mode == Mode.AUTO) {
-            syncCatalogFromStorage();
+        if (mode == Mode.LOCAL) {
+            initLocalDemo();
+            return;
         }
+        // AUTO：从存储核心同步真实表结构（数据落盘持久化，重启不还原）
+        if (syncCatalogFromStorage()) {
+            storageAvailable = true;
+            return;
+        }
+        // 存储核心不可用时回退内置示例数据，保证界面/CLI 仍可演示
+        initLocalDemo();
     }
 
-    /** 可供浏览的表名列表（供 GUI 左侧列表使用） */
+    /** 可供浏览的表名列表（按字典序，供 GUI 左侧列表使用） */
     public List<String> tableNames() {
-        return new ArrayList<>(tables.keySet());
+        List<String> names = new ArrayList<>(tables.keySet());
+        names.sort(String::compareTo);
+        return names;
     }
 
     /** 最近一次执行的回退说明；null 表示真实执行 */
@@ -112,12 +119,66 @@ public class SqlEngine {
         return fallbackReason;
     }
 
-    /** AUTO 启动时从存储核心同步表结构（showTables + describeTable） */
-    private void syncCatalogFromStorage() {
+    /** 存储核心是否可用（AUTO 模式下为真） */
+    public boolean isStorageAvailable() {
+        return storageAvailable;
+    }
+
+    /** 结束存储服务会话（协议 exit 正常落盘退出）；断开连接或窗口关闭时调用 */
+    @Override
+    public void close() {
+        storageClient.close();
+    }
+
+    /** AUTO 启动时从存储核心同步表结构；空库时预置示例数据。返回核心是否可用 */
+    private boolean syncCatalogFromStorage() {
         StorageTableMetadataProvider provider = new StorageTableMetadataProvider(storageClient);
         List<String> storageTables = provider.getTableNames();
-        if (!storageTables.isEmpty()) {
-            catalog.syncFromStorage(provider);
+        // showTables 失败（核心不可用）与空库同样返回空表，需二次探测区分
+        if (storageTables.isEmpty()
+                && storageClient.call("{\"op\":\"showTables\"}").getType()
+                        != StorageResult.Type.RESULTSET) {
+            return false;
+        }
+        for (String tableName : storageTables) {
+            List<CatalogImpl.ColumnInfo> columns = provider.getTableColumns(tableName);
+            if (columns.isEmpty()) {
+                continue;
+            }
+            try {
+                catalog.createTableWithTypes(tableName, columns);
+                tables.put(tableName, new TableData(columns, new ArrayList<>()));
+            } catch (RuntimeException ignore) {
+                // 重复登记等异常跳过，不影响其余表
+            }
+        }
+        // 空库时预置示例数据：走完整流水线真实落库，重启后依然存在
+        if (tables.isEmpty()) {
+            bootstrapSampleData();
+        }
+        return true;
+    }
+
+    /** 空库预置示例数据：逐条走完整流水线（CREATE + INSERT 真实落库） */
+    private void bootstrapSampleData() {
+        execute("CREATE TABLE student (id INT, name VARCHAR, age INT, grade VARCHAR)");
+        execute("CREATE TABLE course (cid INT, title VARCHAR, credit INT)");
+        execute("CREATE TABLE teacher (tid INT, name VARCHAR, dept VARCHAR)");
+        String[] inserts = {
+                "INSERT INTO student VALUES (1, 'Alice', 20, 'A')",
+                "INSERT INTO student VALUES (2, 'Bob', 22, 'B+')",
+                "INSERT INTO student VALUES (3, 'Carol', 21, 'A-')",
+                "INSERT INTO student VALUES (4, 'David', 23, 'B')",
+                "INSERT INTO student VALUES (5, 'Eve', 19, 'A+')",
+                "INSERT INTO course VALUES (101, 'Database', 4)",
+                "INSERT INTO course VALUES (102, 'Operating Sys', 3)",
+                "INSERT INTO course VALUES (103, 'Compiler', 4)",
+                "INSERT INTO teacher VALUES (1, 'Yao Xin', 'Computer')",
+                "INSERT INTO teacher VALUES (2, 'Gui Ning', 'Computer')",
+                "INSERT INTO teacher VALUES (3, 'Deng Lei', 'Computer')"
+        };
+        for (String sql : inserts) {
+            execute(sql);
         }
     }
 
@@ -497,6 +558,12 @@ public class SqlEngine {
     }
 
     // ====================== 内置示例数据 ======================
+
+    /** 初始化内置示例数据并注册进数据字典（LOCAL 模式与回退场景使用） */
+    private void initLocalDemo() {
+        initSampleData();
+        tables.forEach((name, data) -> catalog.createTableWithTypes(name, data.columns));
+    }
 
     /** 初始化 student / course / teacher 三张示例表（列带类型，供语义校验） */
     private void initSampleData() {

@@ -8,18 +8,21 @@ import javax.swing.border.EmptyBorder;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.awt.event.ActionEvent;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.util.List;
 
 /**
  * SQXDL 数据库管理系统图形界面（纯 Swing）。
  * 界面只负责展示与交互，SQL 一律交给 {@link SqlEngine} 执行——
  * 与 CLI（Main）共用同一套 解析 -> 语义分析 -> 计划生成 流水线；
- * 引擎以 LOCAL 模式运行，数据保存在 JVM 内，保证演示效果。
+ * 引擎以 AUTO 模式运行：数据写入存储核心并落盘持久化，重启后不还原；
+ * 存储核心不可用时自动回退内置示例数据模拟。
  */
 public class SwingDemo extends JFrame {
 
-    /** SQL 执行引擎：LOCAL 模式，数据保存在内存；解析与语义校验复用真实流水线 */
-    private final SqlEngine engine = new SqlEngine(SqlEngine.Mode.LOCAL);
+    /** SQL 执行引擎：AUTO 模式优先存储核心（持久化），不可用回退本地模拟 */
+    private final SqlEngine engine = new SqlEngine(SqlEngine.Mode.AUTO);
 
     // ====================== UI 组件 ======================
 
@@ -33,7 +36,12 @@ public class SwingDemo extends JFrame {
 
     public SwingDemo() {
         initUI();
-        log("系统就绪（本地演示模式，示例数据保存在内存）");
+        if (engine.isStorageAvailable()) {
+            log("✅ 已连接存储核心，数据持久化于 \\SQXDL\\data\\，重启后数据保留");
+        } else {
+            log("⚠ 未检测到存储核心（storage_core.exe），当前使用本地模拟数据（重启后不保留）");
+        }
+        refreshTableList();
         log("点击「连接」开始使用 SQXDL Database Manager v1.0");
     }
 
@@ -41,6 +49,13 @@ public class SwingDemo extends JFrame {
     private void initUI() {
         setTitle("SQXDL Database Manager");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        // 关窗时结束存储服务会话（协议 exit 正常落盘退出）
+        addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosing(WindowEvent e) {
+                engine.close();
+            }
+        });
         setSize(960, 720);
         setLocationRelativeTo(null);
         setLayout(new BorderLayout(8, 8));
@@ -56,7 +71,7 @@ public class SwingDemo extends JFrame {
         toolBar.setFloatable(false);
         toolBar.setBorder(new EmptyBorder(6, 8, 6, 8));
 
-        JLabel title = new JLabel("🗄️ SQXDL Database Manager");
+        JLabel title = new JLabel("SQXDL Database Manager");
         title.setFont(title.getFont().deriveFont(Font.BOLD, 16f));
         toolBar.add(title);
         toolBar.add(Box.createHorizontalGlue());
@@ -84,7 +99,7 @@ public class SwingDemo extends JFrame {
             }
         });
         JScrollPane listScroll = new JScrollPane(tableList);
-        listScroll.setBorder(BorderFactory.createTitledBorder("📂 表列表"));
+        listScroll.setBorder(BorderFactory.createTitledBorder("📂表列表"));
         listScroll.setPreferredSize(new Dimension(160, 0));
 
         // 右侧：数据表格 + 行数标签
@@ -98,7 +113,7 @@ public class SwingDemo extends JFrame {
         dataTable.setRowHeight(24);
         dataTable.setAutoCreateRowSorter(true);
         JScrollPane tableScroll = new JScrollPane(dataTable);
-        tableScroll.setBorder(BorderFactory.createTitledBorder("📊 数据浏览"));
+        tableScroll.setBorder(BorderFactory.createTitledBorder("数据浏览"));
 
         rowCountLabel = new JLabel("共 0 行");
         rowCountLabel.setBorder(new EmptyBorder(2, 8, 4, 8));
@@ -179,7 +194,7 @@ public class SwingDemo extends JFrame {
         sqlArea.setText("");
     }
 
-    /** 连接数据库（模拟）。 */
+    /** 连接数据库：拉起存储服务会话（懒启动）并同步表列表。 */
     private void connect() {
         if (connected) {
             log("⚠ 已处于连接状态");
@@ -187,16 +202,19 @@ public class SwingDemo extends JFrame {
         }
         connected = true;
         log("✅ 已连接到 SQXDL 数据库，版本 v1.0");
+        refreshTableList();
+        log("📂 当前共 " + tableList.getModel().getSize() + " 张表");
     }
 
-    /** 断开连接（模拟）。 */
+    /** 断开连接：结束存储服务会话（协议 exit 正常落盘）；下次执行自动重连。 */
     private void disconnect() {
         if (!connected) {
             log("⚠ 当前未连接");
             return;
         }
         connected = false;
-        log("🔌 已断开连接");
+        engine.close();
+        log("🔌 已断开连接（存储服务已关闭，数据已落盘）");
     }
 
     /** 左侧点击表：走 SELECT * FROM 表 的完整流水线加载该表数据。 */
@@ -225,7 +243,7 @@ public class SwingDemo extends JFrame {
         StorageResult result = engine.execute(trimmed);
         long elapsed = System.currentTimeMillis() - start;
 
-        render(result);
+        render(result, trimmed);
         if (engine.getFallbackReason() != null) {
             log("ℹ " + engine.getFallbackReason());
         }
@@ -235,7 +253,7 @@ public class SwingDemo extends JFrame {
     }
 
     /** 按结果类型分发渲染：查询结果进表格，行数/错误进日志。 */
-    private void render(StorageResult result) {
+    private void render(StorageResult result, String sql) {
         switch (result.getType()) {
             case RESULTSET -> showResultSet(result);
             case ROWCOUNT -> {
@@ -243,6 +261,10 @@ public class SwingDemo extends JFrame {
                 log(affected > 0
                         ? "✅ 执行成功，" + affected + " 行受影响"
                         : "✅ 执行成功");
+                // 建表成功后实时刷新左侧表列表
+                if (sql.toLowerCase().startsWith("create table")) {
+                    refreshTableList();
+                }
                 // 写操作成功后刷新当前表，让界面立即反映数据变化
                 String current = tableList.getSelectedValue();
                 if (current != null) {
@@ -253,11 +275,16 @@ public class SwingDemo extends JFrame {
         }
     }
 
+    /** 用引擎数据字典的最新表名刷新左侧表列表。 */
+    private void refreshTableList() {
+        tableList.setListData(engine.tableNames().toArray(new String[0]));
+    }
+
     /** 把查询结果渲染到右侧表格。 */
     private void showResultSet(StorageResult result) {
         tableModel.setDataVector(toMatrix(result.getRows()), result.getColumns().toArray());
         updateRowCount(result.getRows().size());
-        log("✅ 查询成功，返回 " + result.getRows().size() + " 行");
+        log("查询成功，返回 " + result.getRows().size() + " 行");
     }
 
     // ====================== 工具方法 ======================
