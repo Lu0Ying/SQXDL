@@ -1,6 +1,7 @@
 package com.sqxdl.executor.storage;
 
 import com.sqxdl.parser.ASTNode;
+import com.sqxdl.semantic.CatalogImpl;
 import com.sqxdl.semantic.PlanNode;
 
 /**
@@ -53,7 +54,12 @@ public final class PhysicalPlanJson {
             sb.append('}');
         } else if (plan instanceof PlanNode.CreateTablePlan p) {
             sb.append("{\"op\":\"createTable\",\"table\":").append(Json.quote(p.getTableName()))
-              .append(",\"columns\":").append(stringArray(p.getColumns())).append('}');
+              .append(",\"columns\":").append(columnDefArray(p)).append('}');
+        } else if (plan instanceof PlanNode.ShowTablesPlan) {
+            sb.append("{\"op\":\"showTables\"}");
+        } else if (plan instanceof PlanNode.DropTablePlan p) {
+            // 存储核心协议：删表操作名为 deleteTable（非 dropTable）
+            sb.append("{\"op\":\"deleteTable\",\"table\":").append(Json.quote(p.getTableName())).append('}');
         } else {
             throw new IllegalArgumentException("不支持的计划节点: " + plan.getClass().getSimpleName());
         }
@@ -82,9 +88,14 @@ public final class PhysicalPlanJson {
         }
     }
 
-    /** 运算符归一化：Parser 允许 == 写法，存储核心只识别 = */
+    /** 运算符归一化：== 写法、逻辑运算符符号形式转为存储核心识别的关键字 */
     private static String normalizeOp(String op) {
-        return "==".equals(op) ? "=" : op;
+        return switch (op) {
+            case "==" -> "=";
+            case "&&" -> "AND";
+            case "||" -> "OR";
+            default -> op;
+        };
     }
 
     /** 条件可省略（update/delete 无 WHERE 时作用于全表），为 null 时不写字段 */
@@ -140,5 +151,33 @@ public final class PhysicalPlanJson {
             sb.append(Json.quote(items.get(i)));
         }
         return sb.append(']');
+    }
+
+    /** 建表列定义：带类型时输出对象数组 [{"name":..,"type":..}]，否则退化为列名字符串数组 */
+    private static StringBuilder columnDefArray(PlanNode.CreateTablePlan plan) {
+        java.util.List<CatalogImpl.ColumnInfo> defs = plan.getColumnDefs();
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < plan.getColumns().size(); i++) {
+            if (i > 0) {
+                sb.append(',');
+            }
+            if (defs != null && i < defs.size()) {
+                CatalogImpl.ColumnInfo def = defs.get(i);
+                sb.append("{\"name\":").append(Json.quote(def.getName()))
+                  .append(",\"type\":").append(Json.quote(typeName(def.getType()))).append('}');
+            } else {
+                sb.append(Json.quote(plan.getColumns().get(i)));
+            }
+        }
+        return sb.append(']');
+    }
+
+    /** 数据字典类型 -> 存储核心类型字符串 */
+    private static String typeName(CatalogImpl.DataType type) {
+        return switch (type) {
+            case INT -> "INT";
+            case BOOLEAN -> "BOOLEAN";
+            default -> "VARCHAR";
+        };
     }
 }

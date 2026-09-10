@@ -386,4 +386,28 @@ public abstract class ASTNode {
                     : "ShowStmt{target=TABLE, table=" + tableName + "}";
         }
     }
+
+
+    /**
+     * DROP TABLE 语句节点，对应语法：DROP TABLE tableName
+     * 删除指定表及其数据。
+     */
+    public static class DropTableStmt extends ASTNode {
+
+        private final String tableName;
+
+        public DropTableStmt(int line, int col, String tableName) {
+            super(line, col);
+            this.tableName = tableName;
+        }
+
+        public String getTableName() {
+            return tableName;
+        }
+
+        @Override
+        public String toString() {
+            return "DropTableStmt{table=" + tableName + "}";
+        }
+    }
 }

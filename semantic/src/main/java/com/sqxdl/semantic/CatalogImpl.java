@@ -83,6 +83,18 @@ public class CatalogImpl {
     }
 
     /**
+     * 删除表。如果表不存在则抛出 IllegalArgumentException。
+     *
+     * @param name 要删除的表名
+     */
+    public void dropTable(String name) {
+        if (!tables.containsKey(name)) {
+            throw new IllegalArgumentException("Table does not exist: " + name);
+        }
+        tables.remove(name);
+    }
+
+    /**
      * 查询表的列名清单。
      *
      * @return 列名清单的副本；表不存在时返回 null（由调用方判断）
@@ -139,5 +151,58 @@ public class CatalogImpl {
     public List<ColumnInfo> getColumnInfos(String name) {
         List<ColumnInfo> columns = tables.get(name);
         return columns == null ? null : new ArrayList<>(columns);
+    }
+
+    // ========== 与存储引擎同步（方案 B） ==========
+
+    /**
+     * 从存储引擎同步所有表的元数据到本地数据字典。
+     * <p>
+     * 流程：
+     * <pre>
+     *   1. provider.getTableNames() → 拿到所有表名（对应 showTables）
+     *   2. 对每张表 provider.getTableColumns() → 拿到列名 + 类型（对应 describeTable）
+     *   3. 注册到 CatalogImpl
+     * </pre>
+     * 同步前会清空本地已登记的全部表，保证与存储引擎一致。
+     *
+     * @param provider 存储引擎元数据提供者
+     */
+    public void syncFromStorage(TableMetadataProvider provider) {
+        tables.clear();
+        List<String> tableNames = provider.getTableNames();
+        for (String tableName : tableNames) {
+            List<ColumnInfo> columns = provider.getTableColumns(tableName);
+            if (columns != null && !columns.isEmpty()) {
+                tables.put(tableName, new ArrayList<>(columns));
+            }
+        }
+    }
+
+    /**
+     * 从存储引擎同步单张表的元数据（用于 CREATE TABLE 之后增量更新）。
+     * <p>
+     * 若表已存在于本地，则覆盖更新；若 provider 返回空列表则不做任何操作
+     * （如表刚被删除）。
+     *
+     * @param tableName 表名
+     * @param provider  存储引擎元数据提供者
+     */
+    public void syncTableFromStorage(String tableName, TableMetadataProvider provider) {
+        List<ColumnInfo> columns = provider.getTableColumns(tableName);
+        if (columns == null || columns.isEmpty()) {
+            tables.remove(tableName);
+            return;
+        }
+        tables.put(tableName, new ArrayList<>(columns));
+    }
+
+    /**
+     * 获取所有已登记的表名（用于调试/测试）。
+     *
+     * @return 表名列表的副本
+     */
+    public List<String> getAllTableNames() {
+        return new ArrayList<>(tables.keySet());
     }
 }

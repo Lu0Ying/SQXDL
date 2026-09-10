@@ -2,36 +2,44 @@
 
 #include "core/database.h"
 #include "core/storage_error.h"
+#include "core/table.h"
 
-// 查看表结构：返回单列 field 的数据集，按建表顺序列出列名；
+// 查看表结构：返回列 column + type 的数据集，按建表顺序列出每列的列名与类型；
 // 表不存在由 Database 抛 StorageError(TABLE_NOT_FOUND)，捕获后转为 error JSON
 nlohmann::json execute_describe_table(const nlohmann::json &plan)
 {
     try
     {
-        if (!plan.contains("table") || !plan["table"].is_string())
+        if (!plan.contains("table") || !plan.at("table").is_string() ||
+            plan.at("table").get<std::string>().empty())
         {
-            throw StorageError("INVALID_PLAN", "describeTable 需要字符串字段 table");
+            throw StorageError("INVALID_PLAN", "缺少或非法的字符串字段 table");
         }
-        const Database &database = Database::instance();
-        const Table &table = database.get_table(plan["table"].get<std::string>());
+        const Table &table = Database::instance().get_table(plan.at("table").get<std::string>());
+
+        nlohmann::json columns = nlohmann::json::array();
+        columns.push_back("column");
+        columns.push_back("type");
 
         nlohmann::json rows = nlohmann::json::array();
-        for (const std::string &name : table.column_names())
+        for (const auto &column : table.columns())
         {
-            rows.push_back(nlohmann::json::array({name}));
+            nlohmann::json row = nlohmann::json::array();
+            row.push_back(column.name);
+            row.push_back(column.type);
+            rows.push_back(std::move(row));
         }
+
         return {
             {"success", true},
             {"type", "resultset"},
-            {"columns", nlohmann::json::array({"field"})},
-            {"rows", rows}};
+            {"columns", std::move(columns)},
+            {"rows", std::move(rows)}};
     }
     catch (const StorageError &e)
     {
-        return {
-            {"success", false},
-            {"type", "error"},
-            {"error", {{"code", e.code()}, {"message", e.what()}}}};
+        return {{"success", false},
+                {"type", "error"},
+                {"error", {{"code", e.code()}, {"message", e.what()}}}};
     }
 }

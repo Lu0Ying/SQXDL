@@ -42,6 +42,24 @@ const std::vector<Row> &Table::rows() const
     return rows_;
 }
 
+const Row &Table::row(size_t index) const
+{
+    if (index >= rows_.size())
+    {
+        throw StorageError("INTERNAL_ERROR", "行索引越界: " + std::to_string(index));
+    }
+    return rows_[index];
+}
+
+Row &Table::row(size_t index)
+{
+    if (index >= rows_.size())
+    {
+        throw StorageError("INTERNAL_ERROR", "行索引越界: " + std::to_string(index));
+    }
+    return rows_[index];
+}
+
 bool Table::has_column(const std::string &name) const
 {
     for (const auto &column : columns_)

@@ -8,7 +8,8 @@
 #include "nlohmann/json.hpp"
 #include "row.h"
 
-// 表：列定义 + 行数据（内存表），列顺序即行内字段顺序
+// 表：列定义 + 行数据（内存表），列顺序即行内字段顺序；
+// 行数据经 Database 写入独立页文件，进程重启后从页文件恢复
 class Table
 {
 public:
@@ -21,6 +22,10 @@ public:
 
     size_t row_count() const;
     const std::vector<Row> &rows() const;
+
+    // 按索引访问行；越界抛 StorageError(INTERNAL_ERROR)
+    const Row &row(size_t index) const;
+    Row &row(size_t index);
 
     bool has_column(const std::string &name) const;
     // 列不存在抛 StorageError(COLUMN_NOT_FOUND)

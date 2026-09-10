@@ -186,15 +186,23 @@ public abstract class PlanNode {
 
     /**
      * 建表计划：创建表并登记列名清单，对应 CREATE TABLE 语句。
+     * 存储核心协议已升级为带类型的列定义，可选携带 columnDefs（为 null 时退化为仅列名）。
      */
     public static class CreateTablePlan extends PlanNode {
 
         private final String tableName;
         private final List<String> columns;
+        private final List<CatalogImpl.ColumnInfo> columnDefs;
 
         public CreateTablePlan(String tableName, List<String> columns) {
+            this(tableName, columns, null);
+        }
+
+        public CreateTablePlan(String tableName, List<String> columns,
+                               List<CatalogImpl.ColumnInfo> columnDefs) {
             this.tableName = tableName;
             this.columns = columns;
+            this.columnDefs = columnDefs;
         }
 
         public String getTableName() {
@@ -205,9 +213,51 @@ public abstract class PlanNode {
             return columns;
         }
 
+        /** 带类型的列定义（可能为 null，序列化时按需退化） */
+        public List<CatalogImpl.ColumnInfo> getColumnDefs() {
+            return columnDefs;
+        }
+
         @Override
         public String toString() {
             return "CreateTable{table=" + tableName + ", columns=" + columns + "}";
+        }
+    }
+
+    /**
+     * 列出所有表计划，对应 SHOW TABLES 语句。
+     * 返回单列 table，每行为一个表名。
+     */
+    public static class ShowTablesPlan extends PlanNode {
+
+        public ShowTablesPlan() {
+        }
+
+        @Override
+        public String toString() {
+            return "ShowTables{}";
+        }
+    }
+
+    /**
+     * 删表计划，对应 DROP TABLE 语句。
+     * 删除 tableName 对应的表及其数据。
+     */
+    public static class DropTablePlan extends PlanNode {
+
+        private final String tableName;
+
+        public DropTablePlan(String tableName) {
+            this.tableName = tableName;
+        }
+
+        public String getTableName() {
+            return tableName;
+        }
+
+        @Override
+        public String toString() {
+            return "DropTable{table=" + tableName + "}";
         }
     }
 
@@ -290,6 +340,10 @@ public abstract class PlanNode {
         } else if (node instanceof CreateTablePlan p) {
             detailLine(sb, depth, "table", p.getTableName());
             detailLine(sb, depth, "columns", p.getColumns());
+        } else if (node instanceof ShowTablesPlan) {
+            // 无属性
+        } else if (node instanceof DropTablePlan p) {
+            detailLine(sb, depth, "table", p.getTableName());
         }
     }
 
@@ -315,6 +369,8 @@ public abstract class PlanNode {
         if (node instanceof UpdatePlan) return "UpdatePlan";
         if (node instanceof DeletePlan) return "DeletePlan";
         if (node instanceof CreateTablePlan) return "CreateTablePlan";
+        if (node instanceof ShowTablesPlan) return "ShowTablesPlan";
+        if (node instanceof DropTablePlan) return "DropTablePlan";
         return node.getClass().getSimpleName();
     }
 
