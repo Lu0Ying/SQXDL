@@ -46,6 +46,10 @@ public:
     // 类型不兼容抛 StorageError(TYPE_MISMATCH)，任一方为 Null 返回 false
     static bool less(const Value &lhs, const Value &rhs);
 
+    // 二元算术（+ - * /）：两操作数须为数字，否则抛 StorageError(TYPE_MISMATCH)；
+    // 两整数运算返回整数，任一方为浮点则返回浮点；除数为 0 时返回 Null（结果未知）
+    static Value arith(const std::string &op, const Value &lhs, const Value &rhs);
+
     // 逻辑真值（AND/OR 等逻辑运算的操作数）：
     // Boolean 取其值；Null 按 SQL 三值逻辑视为未知（false）；
     // 其他类型抛 StorageError(TYPE_MISMATCH)

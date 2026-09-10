@@ -66,7 +66,8 @@ private:
 };
 
 // 二元运算节点（type = binary）：
-// 比较运算 =  !=  <>  <  <=  >  >= ；逻辑运算 AND / OR（大小写不敏感）
+// 比较运算 =  !=  <>  <  <=  >  >= ；逻辑运算 AND / OR（大小写不敏感）；
+// 算术运算 +  -  *  /
 class BinaryExpression : public Expression
 {
 public:
