@@ -1,11 +1,14 @@
 package com.sqxdl.swing;
 
+import com.sqxdl.executor.CommandHistory;
 import com.sqxdl.executor.SqlEngine;
 import com.sqxdl.executor.storage.StorageResult;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.text.BadLocationException;
+import javax.swing.text.DefaultEditorKit;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.WindowAdapter;
@@ -33,6 +36,11 @@ public class SwingDemo extends JFrame {
     private JTextArea sqlArea;
     private JTextArea logArea;
     private boolean connected = false;
+
+    /** 输入历史（↑/↓ 翻阅）；historyIndex 为 -1 表示停留在最新草稿位置 */
+    private final CommandHistory inputHistory = new CommandHistory();
+    private int historyIndex = -1;
+    private String historyDraft = "";
 
     public SwingDemo() {
         initUI();
@@ -136,8 +144,9 @@ public class SwingDemo extends JFrame {
         sqlArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 14));
         sqlArea.setTabSize(4);
         bindEnterToExecute();
+        bindHistoryNavigation();
         JScrollPane sqlScroll = new JScrollPane(sqlArea);
-        sqlScroll.setBorder(BorderFactory.createTitledBorder("SQL 执行区（Enter 执行 / Shift+Enter 换行）"));
+        sqlScroll.setBorder(BorderFactory.createTitledBorder("SQL 执行区（Enter 执行 / Shift+Enter 换行 / ↑↓ 历史）"));
 
         JButton execBtn = new JButton("▶ 执行");
         JButton clearBtn = new JButton("清空");
@@ -182,6 +191,87 @@ public class SwingDemo extends JFrame {
         });
     }
 
+    /**
+     * 绑定 ↑/↓ 翻阅输入历史。
+     * 仅当光标位于首行（↑）或末行（↓）时才切换历史，
+     * 其余情况回退为默认光标移动，保证多行 SQL 的编辑体验不受影响。
+     */
+    private void bindHistoryNavigation() {
+        InputMap inputMap = sqlArea.getInputMap(JComponent.WHEN_FOCUSED);
+        ActionMap actionMap = sqlArea.getActionMap();
+        // 取出默认的光标上下移动动作，未触发历史翻阅时委托给它
+        Action defaultUp = actionMap.get(DefaultEditorKit.upAction);
+        Action defaultDown = actionMap.get(DefaultEditorKit.downAction);
+        inputMap.put(KeyStroke.getKeyStroke("UP"), "history-prev");
+        inputMap.put(KeyStroke.getKeyStroke("DOWN"), "history-next");
+        actionMap.put("history-prev", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                navigateHistory(-1, defaultUp, e);
+            }
+        });
+        actionMap.put("history-next", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                navigateHistory(1, defaultDown, e);
+            }
+        });
+    }
+
+    /**
+     * 历史翻阅：↑ 向旧翻一条、↓ 向新翻一条（翻过最新一条时恢复执行前的草稿）。
+     *
+     * @param delta    -1 表示 ↑（向旧），1 表示 ↓（向新）
+     * @param fallback 未触发翻阅时的默认光标动作（可为 null）
+     */
+    private void navigateHistory(int delta, Action fallback, ActionEvent event) {
+        boolean atEdge = delta < 0 ? caretAtFirstLine() : caretAtLastLine();
+        if (inputHistory.size() == 0 || !atEdge) {
+            if (fallback != null) {
+                fallback.actionPerformed(event);
+            }
+            return;
+        }
+        if (delta < 0) {
+            if (historyIndex == -1) {
+                // 从最新位置开始翻历史：先保存当前未执行的内容作为草稿
+                historyDraft = sqlArea.getText();
+                historyIndex = inputHistory.size() - 1;
+            } else if (historyIndex > 0) {
+                historyIndex--;
+            }
+        } else if (historyIndex != -1) {
+            if (historyIndex < inputHistory.size() - 1) {
+                historyIndex++;
+            } else {
+                historyIndex = -1;
+            }
+        }
+        String text = historyIndex == -1 ? historyDraft : inputHistory.get(historyIndex);
+        sqlArea.setText(text);
+        sqlArea.setCaretPosition(text.length());
+    }
+
+    /** 光标是否在首行（光标之前不存在换行符）。 */
+    private boolean caretAtFirstLine() {
+        try {
+            return sqlArea.getText(0, sqlArea.getCaretPosition()).indexOf('\n') < 0;
+        } catch (BadLocationException e) {
+            return true;
+        }
+    }
+
+    /** 光标是否在末行（光标之后不存在换行符）。 */
+    private boolean caretAtLastLine() {
+        try {
+            int caret = sqlArea.getCaretPosition();
+            int rest = sqlArea.getDocument().getLength() - caret;
+            return sqlArea.getText(caret, rest).indexOf('\n') < 0;
+        } catch (BadLocationException e) {
+            return true;
+        }
+    }
+
     /** 输入框回车 / 点击执行按钮：回显 SQL、执行并清空输入框（模拟 CLI 一轮交互）。 */
     private void executeFromInput() {
         String sql = sqlArea.getText().trim();
@@ -190,6 +280,10 @@ public class SwingDemo extends JFrame {
             return;
         }
         log("sqxdl> " + sql);
+        // 记入历史并重置浏览状态：下次 ↑ 从刚执行的这条开始向前翻
+        inputHistory.add(sql);
+        historyIndex = -1;
+        historyDraft = "";
         executeSql(sql);
         sqlArea.setText("");
     }
