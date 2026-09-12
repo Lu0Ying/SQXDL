@@ -39,22 +39,85 @@ public abstract class ASTNode {
 
     /**
      * SELECT 语句节点。
-     * 目前仅支持单表查询，对应语法：SELECT selectList FROM tableName [WHERE whereCond]
+     * 支持单表 / 多表 JOIN，对应语法：
+     * SELECT selectList FROM tableName { JOIN tableName ON expr }
+     *   [WHERE whereCond] [GROUP BY id_list] [ORDER BY order_list]
+     * WHERE 与 JOIN ON 条件分离存储，为语义层做跨表谓词下推提供结构基础
+     * （语义层可将只涉及单表的谓词下推到对应表扫描）。
      */
     public static class SelectStmt extends ASTNode {
 
+        /** 连接子句：JOIN 的表与 ON 条件（onCond 已做常量折叠 / 逻辑简化） */
+        public static class JoinClause {
+            private final String tableName;
+            private final ASTNode onCond;
+
+            public JoinClause(String tableName, ASTNode onCond) {
+                this.tableName = tableName;
+                this.onCond = onCond;
+            }
+
+            public String getTableName() {
+                return tableName;
+            }
+
+            public ASTNode getOnCond() {
+                return onCond;
+            }
+
+            @Override
+            public String toString() {
+                return "JoinClause{table=" + tableName + ", on=" + onCond + "}";
+            }
+        }
+
+        /** 排序项：列名 + 方向（"ASC" / "DESC"，缺省为 "ASC"） */
+        public static class OrderItem {
+            private final String column;
+            private final String direction;
+
+            public OrderItem(String column, String direction) {
+                this.column = column;
+                this.direction = direction;
+            }
+
+            public String getColumn() {
+                return column;
+            }
+
+            public String getDirection() {
+                return direction;
+            }
+
+            @Override
+            public String toString() {
+                return column + " " + direction;
+            }
+        }
+
         private final String tableName;
-        /** 查询列名列表；SELECT * 时约定为表的全部列 */
+        /** 查询列名列表；SELECT * 时约定为 ["*"]，展开由语义层负责 */
         private final List<String> selectList;
         /** WHERE 条件表达式；无 WHERE 子句时为 null */
         private final ASTNode whereCond;
+        /** JOIN 连接子句列表（按书写顺序）；无 JOIN 时为空列表 */
+        private final List<JoinClause> joins;
+        /** GROUP BY 列名列表；无 GROUP BY 时为空列表 */
+        private final List<String> groupBy;
+        /** ORDER BY 排序项列表（按书写顺序）；无 ORDER BY 时为空列表 */
+        private final List<OrderItem> orderBy;
 
         public SelectStmt(int line, int col, String tableName,
-                          List<String> selectList, ASTNode whereCond) {
+                          List<String> selectList, ASTNode whereCond,
+                          List<JoinClause> joins, List<String> groupBy,
+                          List<OrderItem> orderBy) {
             super(line, col);
             this.tableName = tableName;
             this.selectList = selectList;
             this.whereCond = whereCond;
+            this.joins = joins;
+            this.groupBy = groupBy;
+            this.orderBy = orderBy;
         }
 
         public String getTableName() {
@@ -69,11 +132,29 @@ public abstract class ASTNode {
             return whereCond;
         }
 
+        /** JOIN 子句列表；无 JOIN 时返回空列表（非 null） */
+        public List<JoinClause> getJoins() {
+            return joins;
+        }
+
+        /** GROUP BY 列名列表；无 GROUP BY 时返回空列表（非 null） */
+        public List<String> getGroupBy() {
+            return groupBy;
+        }
+
+        /** ORDER BY 排序项列表；无 ORDER BY 时返回空列表（非 null） */
+        public List<OrderItem> getOrderBy() {
+            return orderBy;
+        }
+
         @Override
         public String toString() {
             return "SelectStmt{table=" + tableName
                     + ", columns=" + selectList
-                    + ", where=" + whereCond + "}";
+                    + (joins.isEmpty() ? "" : ", joins=" + joins)
+                    + ", where=" + whereCond
+                    + (groupBy.isEmpty() ? "" : ", groupBy=" + groupBy)
+                    + (orderBy.isEmpty() ? "" : ", orderBy=" + orderBy) + "}";
         }
     }
 
@@ -355,8 +436,9 @@ public abstract class ASTNode {
     }
 
     /**
-     * SHOW 语句节点，对应语法：SHOW TABLES | SHOW TABLE tableName。
+     * SHOW 语句节点，对应语法：SHOW TABLES | SHOW TABLE tableName | DESCRIBE tableName | DESC tableName。
      * target 为 "TABLES" 或 "TABLE"；target 为 "TABLE" 时 tableName 为表名，否则为 null。
+     * DESCRIBE / DESC 是 SHOW TABLE 的等价写法，归一化为 target=TABLE 输出。
      */
     public static class ShowStmt extends ASTNode {
 

@@ -23,7 +23,9 @@ public class Lexer {
             "SELECT", "FROM", "WHERE", "CREATE", "TABLE", "TABLES",
             "INSERT", "INTO", "VALUES", "DELETE", "UPDATE", "SET",
             "AND", "OR", "NOT", "TRUE", "FALSE",
-            "INT", "VARCHAR", "DOUBLE", "SHOW", "DROP");
+            "INT", "VARCHAR", "DOUBLE", "SHOW", "DROP",
+            "DESCRIBE", "DESC",
+            "JOIN", "ON", "GROUP", "BY", "ORDER", "ASC");
 
     /** 双字符运算符，需先于单字符判断 */
     private static final Set<String> TWO_CHAR_OPERATORS = Set.of("<=", ">=", "!=", "==", "&&", "||");
@@ -133,7 +135,8 @@ public class Lexer {
         throw new SqxdlException(startLine, startCol, "未闭合的块注释");
     }
 
-    /** 读单词：字母或下划线开头，后跟字母/数字/下划线；查关键字表决定 KEYWORD 或 IDENTIFIER */
+    /** 读单词：字母或下划线开头，后跟字母/数字/下划线；查关键字表决定 KEYWORD 或 IDENTIFIER。
+     *  支持点限定标识符（表名.列名，如 t1.id）：整体作为一个 IDENTIFIER，供 JOIN ON 条件使用。 */
     private Token readWord() {
         int start = pos;
         int startLine = line;
@@ -141,6 +144,17 @@ public class Lexer {
         while (pos < src.length() && isWordChar(src.charAt(pos))) {
             pos++;
             col++;
+        }
+        // 点限定标识符：t1.id 整体作为一个 IDENTIFIER，语义层按 '.' 拆分表名与列名
+        if (pos + 1 < src.length() && src.charAt(pos) == '.'
+                && (isLetter(src.charAt(pos + 1)) || src.charAt(pos + 1) == '_')) {
+            pos++;
+            col++;
+            while (pos < src.length() && isWordChar(src.charAt(pos))) {
+                pos++;
+                col++;
+            }
+            return new Token(Token.Type.IDENTIFIER, src.substring(start, pos), startLine, startCol);
         }
         String word = src.substring(start, pos);
         String upper = word.toUpperCase();
@@ -236,8 +250,14 @@ public class Lexer {
         return new Token(Token.Type.OPERATOR, src.substring(start, pos), startLine, startCol);
     }
 
-    /** 拼写纠错：单词与某关键字编辑距离为 1 时返回该关键字，否则返回 null */
+    /**
+     * 拼写纠错：单词与某关键字编辑距离为 1 时返回该关键字，否则返回 null。
+     * 长度小于 2 的单词不做纠错（如单字母列名 a / b / c），避免与短关键字（BY、ON）误判。
+     */
     private String correctSpelling(String upperWord) {
+        if (upperWord.length() < 2) {
+            return null;
+        }
         for (String keyword : KEYWORDS) {
             if (editDistance(upperWord, keyword) == 1) {
                 return keyword;

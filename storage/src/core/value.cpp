@@ -173,6 +173,63 @@ bool Value::truth_value() const
     }
 }
 
+Value Value::arith(const std::string &op, const Value &lhs, const Value &rhs)
+{
+    if (!lhs.is_number() || !rhs.is_number())
+    {
+        throw StorageError("TYPE_MISMATCH", "Arithmetic operators require numeric operands");
+    }
+    if (lhs.type_ == ValueType::Integer && rhs.type_ == ValueType::Integer)
+    {
+        const int64_t a = lhs.int_value_;
+        const int64_t b = rhs.int_value_;
+        if (op == "+")
+        {
+            return Value(a + b);
+        }
+        if (op == "-")
+        {
+            return Value(a - b);
+        }
+        if (op == "*")
+        {
+            return Value(a * b);
+        }
+        if (op == "/")
+        {
+            if (b == 0)
+            {
+                return Value(nullptr); // 除零结果未知
+            }
+            return Value(a / b);
+        }
+        throw StorageError("INVALID_PLAN", "Unsupported arithmetic operator: " + op);
+    }
+    const double a = lhs.as_double();
+    const double b = rhs.as_double();
+    if (op == "+")
+    {
+        return Value(a + b);
+    }
+    if (op == "-")
+    {
+        return Value(a - b);
+    }
+    if (op == "*")
+    {
+        return Value(a * b);
+    }
+    if (op == "/")
+    {
+        if (b == 0.0)
+        {
+            return Value(nullptr); // 除零结果未知
+        }
+        return Value(a / b);
+    }
+    throw StorageError("INVALID_PLAN", "Unsupported arithmetic operator: " + op);
+}
+
 std::string Value::to_string() const
 {
     switch (type_)

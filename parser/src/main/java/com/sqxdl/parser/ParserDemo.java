@@ -79,9 +79,20 @@ public class ParserDemo {
             System.out.println(indent + "SelectStmt");
             System.out.println(indent + "  table : " + s.getTableName());
             System.out.println(indent + "  columns: " + s.getSelectList());
+            for (ASTNode.SelectStmt.JoinClause j : s.getJoins()) {
+                System.out.println(indent + "  join  : " + j.getTableName());
+                System.out.println(indent + "    on :");
+                printNode(j.getOnCond(), indent + "      ");
+            }
             if (s.getWhereCond() != null) {
                 System.out.println(indent + "  where:");
                 printNode(s.getWhereCond(), indent + "    ");
+            }
+            if (!s.getGroupBy().isEmpty()) {
+                System.out.println(indent + "  groupBy: " + s.getGroupBy());
+            }
+            if (!s.getOrderBy().isEmpty()) {
+                System.out.println(indent + "  orderBy: " + s.getOrderBy());
             }
         } else if (node instanceof ASTNode.InsertStmt i) {
             System.out.println(indent + "InsertStmt");

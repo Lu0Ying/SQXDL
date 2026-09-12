@@ -62,6 +62,14 @@ Value BinaryExpression::evaluate(const EvalContext &ctx) const
         return Value(op_ == "AND" ? (left && right) : (left || right));
     }
 
+    // 算术运算 + - * /：两侧操作数须为数字
+    if (op_ == "+" || op_ == "-" || op_ == "*" || op_ == "/")
+    {
+        const Value left = left_->evaluate(ctx);
+        const Value right = right_->evaluate(ctx);
+        return Value::arith(op_, left, right);
+    }
+
     // 比较运算：任一方为 Null 时结果未知，视为不匹配（对 != 亦然）
     const Value left = left_->evaluate(ctx);
     const Value right = right_->evaluate(ctx);
@@ -122,7 +130,8 @@ ExpressionPtr parse_expression(const nlohmann::json &j)
 {
     if (!j.is_object())
     {
-        throw StorageError("INVALID_PLAN", "condition node must be a JSON object");
+        // 裸 JSON 值（数字/字符串/布尔/null）按字面量处理
+        return std::make_shared<LiteralExpression>(Value::from_json(j));
     }
     const std::string type = j.value("type", "");
     if (type == "column")
@@ -149,7 +158,8 @@ ExpressionPtr parse_expression(const nlohmann::json &j)
         }
         const std::string op = normalize_op(j.at("op").get<std::string>());
         if (op != "=" && op != "!=" && op != "<>" && op != "<" && op != "<=" &&
-            op != ">" && op != ">=" && op != "AND" && op != "OR")
+            op != ">" && op != ">=" && op != "AND" && op != "OR" && op != "+" &&
+            op != "-" && op != "*" && op != "/")
         {
             throw StorageError("INVALID_PLAN", "Unsupported binary operator: " + op);
         }
