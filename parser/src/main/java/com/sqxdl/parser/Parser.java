@@ -286,8 +286,10 @@ public class Parser {
 
     /**
      * 解析查询列清单：列名 (逗号 列名)*，或 SELECT * 时按约定存单元素 ["*"]。
+     * 支持聚合函数 COUNT(*)：产出虚拟列名 "COUNT(*)"（大小写归一），
+     * 语义层跳过其列校验，执行层在 GROUP BY 分组时计算行数。
      *
-     * @return 列名列表
+     * @return 列名列表（可含聚合项 "COUNT(*)"）
      */
     private List<String> parseSelectList() {
         List<String> columns = new ArrayList<>();
@@ -295,13 +297,34 @@ public class Parser {
             advance();
             columns.add("*");
         } else {
-            columns.add(expect(Token.Type.IDENTIFIER).getLexeme());
+            columns.add(parseSelectItem());
             while (peek().getType() == Token.Type.DELIMITER && ",".equals(peek().getLexeme())) {
                 advance();
-                columns.add(expect(Token.Type.IDENTIFIER).getLexeme());
+                columns.add(parseSelectItem());
             }
         }
         return columns;
+    }
+
+    /**
+     * 解析单个投影项：普通列名 或 聚合函数 COUNT(*)。
+     * COUNT 按 IDENTIFIER 词法产出（非关键字），后跟 "(" "*" ")" 即聚合调用；
+     * 其余函数名或不带 * 参数的写法均按语法错误拒绝。
+     *
+     * @return 列名或虚拟聚合列名 "COUNT(*)"
+     */
+    private String parseSelectItem() {
+        Token item = expect(Token.Type.IDENTIFIER);
+        if (peek().getType() == Token.Type.DELIMITER && "(".equals(peek().getLexeme())) {
+            if (!"COUNT".equalsIgnoreCase(item.getLexeme())) {
+                throw syntaxError(item, "COUNT(*)（暂仅支持 COUNT 聚合）");
+            }
+            advance(); // (
+            expectOperator("*");
+            expectDelimiter(")");
+            return "COUNT(*)";
+        }
+        return item.getLexeme();
     }
 
     /**

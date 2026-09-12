@@ -131,8 +131,9 @@ public class PlanGenerator {
             plan = new PlanNode.FilterPlan(whereCond, plan);
         }
 
-        // 3. 叠加 GROUP BY（可选）
-        if (!stmt.getGroupBy().isEmpty()) {
+        // 3. 叠加 GROUP BY（可选）：显式 GROUP BY，或投影含聚合（如 COUNT(*)）时
+        //    补一个空分组键的 GroupBy 计划（全表一组），由执行层计算聚合值
+        if (!stmt.getGroupBy().isEmpty() || hasAggregate(stmt)) {
             plan = new PlanNode.GroupByPlan(new ArrayList<>(stmt.getGroupBy()), plan);
         }
 
@@ -168,6 +169,16 @@ public class PlanGenerator {
         }
         List<String> allColumns = catalog.getColumns(stmt.getTableName());
         return allColumns == null ? new ArrayList<>() : allColumns;
+    }
+
+    /** 投影清单是否含聚合项（如 COUNT(*)）；SELECT * 展开结果不含聚合 */
+    private boolean hasAggregate(ASTNode.SelectStmt stmt) {
+        for (String column : stmt.getSelectList()) {
+            if ("COUNT(*)".equalsIgnoreCase(column)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ========== 条件优化入口 ==========

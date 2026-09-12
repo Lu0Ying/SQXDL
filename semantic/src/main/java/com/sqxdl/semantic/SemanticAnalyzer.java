@@ -112,6 +112,9 @@ public class SemanticAnalyzer {
 
     private void checkSelectColumns(String tableName, List<String> columns, ASTNode node) {
         for (String col : columns) {
+            if (isAggregate(col)) {
+                continue; // 聚合项（如 COUNT(*)）不是真实列，跳过列存在性校验
+            }
             if (!catalog.columnExists(tableName, col)) {
                 throw error("表 " + tableName + " 中不存在列 " + col, node);
             }
@@ -124,8 +127,16 @@ public class SemanticAnalyzer {
      */
     private void checkSelectColumns(List<String> tableNames, List<String> columns, ASTNode node) {
         for (String col : columns) {
+            if (isAggregate(col)) {
+                continue; // 聚合项（如 COUNT(*)）不是真实列，跳过列存在性校验
+            }
             resolveColumn(col, tableNames, node);
         }
+    }
+
+    /** 判断投影项是否为聚合函数调用（Parser 归一化为 "COUNT(*)" 形式） */
+    private boolean isAggregate(String column) {
+        return "COUNT(*)".equalsIgnoreCase(column);
     }
 
     /**

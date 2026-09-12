@@ -126,6 +126,10 @@ public class Main {
         history.add(sql);
         try {
             StorageResult result = engine.execute(sql);
+            // A 组 Lexer 的拼写自动纠错提示（如 SELEC -> SELECT）
+            for (String warning : engine.getSpellWarnings()) {
+                System.out.println("提示: " + warning);
+            }
             // 回退到模拟执行时给出提示，便于区分真实存储与内置数据
             if (engine.getFallbackReason() != null) {
                 System.out.println("提示: " + engine.getFallbackReason());

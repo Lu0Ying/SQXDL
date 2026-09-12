@@ -288,7 +288,36 @@ public class SwingDemo extends JFrame {
         sqlArea.setText("");
     }
 
-    /** 连接数据库：拉起存储服务会话（懒启动）并同步表列表。 */
+    /**
+     * 执行单条 SQL 并渲染结果。
+     *
+     * @param logTiming 是否输出耗时日志（内部刷新当前表时关闭，避免日志重复）
+     */
+    private void executeSql(String sql, boolean logTiming) {
+        String trimmed = sql.trim();
+        if (trimmed.isEmpty()) {
+            log("⚠ SQL 语句为空");
+            return;
+        }
+
+        long start = System.currentTimeMillis();
+        StorageResult result = engine.execute(trimmed);
+        long elapsed = System.currentTimeMillis() - start;
+
+        // A 组 Lexer 的拼写自动纠错提示（如 SELEC -> SELECT）
+        for (String warning : engine.getSpellWarnings()) {
+            log("⚠ " + warning);
+        }
+        render(result, trimmed);
+        if (engine.getFallbackReason() != null) {
+            log("ℹ " + engine.getFallbackReason());
+        }
+        if (logTiming) {
+            log("⏱ 执行耗时: " + elapsed + "ms");
+        }
+    }
+
+    /** 连接：标记连接状态并刷新左侧表列表。 */
     private void connect() {
         if (connected) {
             log("⚠ 已处于连接状态");
@@ -319,31 +348,6 @@ public class SwingDemo extends JFrame {
     /** 执行单条 SQL：调用引擎流水线，渲染结果、回退提示与耗时。 */
     private void executeSql(String sql) {
         executeSql(sql, true);
-    }
-
-    /**
-     * 执行单条 SQL 并渲染结果。
-     *
-     * @param logTiming 是否输出耗时日志（内部刷新当前表时关闭，避免日志重复）
-     */
-    private void executeSql(String sql, boolean logTiming) {
-        String trimmed = sql.trim();
-        if (trimmed.isEmpty()) {
-            log("⚠ SQL 语句为空");
-            return;
-        }
-
-        long start = System.currentTimeMillis();
-        StorageResult result = engine.execute(trimmed);
-        long elapsed = System.currentTimeMillis() - start;
-
-        render(result, trimmed);
-        if (engine.getFallbackReason() != null) {
-            log("ℹ " + engine.getFallbackReason());
-        }
-        if (logTiming) {
-            log("⏱ 执行耗时: " + elapsed + "ms");
-        }
     }
 
     /** 按结果类型分发渲染：查询结果进表格，行数/错误进日志。 */

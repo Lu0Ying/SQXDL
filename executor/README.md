@@ -132,6 +132,10 @@ SELECT * FROM student WHERE NOT age > 20 AND id < 5       -- 逻辑组合（&&/|
 SELECT * FROM student WHERE gpa + 1 > 90                  -- 条件内算术*
 UPDATE student SET gpa = 95.0 WHERE id = 1                -- 更新（可省 WHERE，SET 值须为常量）
 DELETE FROM student WHERE id = 2                          -- 删除（可省 WHERE）
+SELECT name, gpa FROM student WHERE gpa > 90 ORDER BY gpa DESC   -- 排序（多键可逗号续写）
+SELECT grade, COUNT(*) FROM student GROUP BY grade        -- 分组计数（每组输出一行）
+SELECT COUNT(*) FROM student                              -- 全表计数（无 GROUP BY）
+SELECT name, title FROM student JOIN course ON id = cid   -- 内连接（可链式多表）
 SHOW TABLES                                              -- 列出全部表
 SHOW TABLE student                                       -- 查看表结构（列名 + 类型）
 DROP TABLE student                                       -- 删表（同时清理目录与数据）
