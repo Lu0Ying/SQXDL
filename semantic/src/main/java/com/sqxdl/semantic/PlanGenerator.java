@@ -26,6 +26,12 @@ public class PlanGenerator {
     private final CatalogImpl catalog;
     private SemanticAnalyzer analyzer;
 
+    /**
+     * 条件优化开关：generate() 默认开启（生成即优化，保持 B 组既有行为）；
+     * build() 会临时关闭以产出未经条件优化的原始计划树（供 DEBUG 对比）。
+     */
+    private boolean optimizeConditions = true;
+
     public PlanGenerator(CatalogImpl catalog) {
         this.catalog = catalog;
     }
@@ -39,6 +45,71 @@ public class PlanGenerator {
      */
     public void setAnalyzer(SemanticAnalyzer analyzer) {
         this.analyzer = analyzer;
+    }
+
+    /**
+     * 生成未经条件优化（常量折叠/逻辑化简）的原始计划树，供 DEBUG 展示"优化前"对比。
+     * 结构类优化（谓词下推、列裁剪、JOIN 顺序）仍会进行；条件保持 AST 原样。
+     *
+     * @param ast 语法树根节点
+     * @return 原始计划树根节点
+     */
+    public PlanNode build(ASTNode ast) {
+        optimizeConditions = false;
+        try {
+            return generate(ast);
+        } finally {
+            optimizeConditions = true;
+        }
+    }
+
+    /**
+     * 对计划树整体做条件优化：常量折叠、逻辑化简，恒真 Filter 节点整节点移除，
+     * Update/Delete 恒真条件退化为全表。结构类优化（下推/裁剪/JOIN 顺序）已由
+     * 生成阶段完成，此处仅处理条件表达式。
+     *
+     * @param plan 原始计划树根节点（如 {@link #build(ASTNode)} 的结果）
+     * @return 优化后的计划树根节点
+     */
+    public PlanNode optimize(PlanNode plan) {
+        if (plan instanceof PlanNode.FilterPlan p) {
+            ASTNode cond = optimizeCondition(p.getCondition());
+            PlanNode child = optimize(p.getChild());
+            // 恒真条件 → Filter 节点整个移除
+            return cond == null ? child : new PlanNode.FilterPlan(cond, child);
+        }
+        if (plan instanceof PlanNode.ProjectPlan p) {
+            return new PlanNode.ProjectPlan(p.getColumns(), optimize(p.getChild()));
+        }
+        if (plan instanceof PlanNode.GroupByPlan p) {
+            return new PlanNode.GroupByPlan(p.getGroupByColumns(), p.getAggregates(),
+                    optimize(p.getChild()));
+        }
+        if (plan instanceof PlanNode.OrderByPlan p) {
+            return new PlanNode.OrderByPlan(p.getOrderByItems(), optimize(p.getChild()));
+        }
+        if (plan instanceof PlanNode.JoinPlan p) {
+            List<PlanNode> children = new ArrayList<>();
+            for (PlanNode child : p.getChildren()) {
+                children.add(optimize(child));
+            }
+            List<ASTNode> onConds = new ArrayList<>();
+            for (ASTNode on : p.getOnConditions()) {
+                onConds.add(optimizeCondition(on));
+            }
+            return new PlanNode.JoinPlan(children, onConds, p.getAlgorithms());
+        }
+        if (plan instanceof PlanNode.UpdatePlan p) {
+            // 恒真条件 → null（全表更新）
+            return new PlanNode.UpdatePlan(p.getTableName(), p.getAssignments(),
+                    optimizeCondition(p.getCondition()));
+        }
+        if (plan instanceof PlanNode.DeletePlan p) {
+            // 恒真条件 → null（全表删除）
+            return new PlanNode.DeletePlan(p.getTableName(), optimizeCondition(p.getCondition()));
+        }
+        // SeqScan/Insert/CreateTable/Show/Describe/Drop：无子树、无条件，原样返回
+        return plan;
     }
 
     /**
@@ -56,11 +127,11 @@ public class PlanGenerator {
         }
         if (ast instanceof ASTNode.UpdateStmt stmt) {
             return new PlanNode.UpdatePlan(stmt.getTableName(), stmt.getAssignments(),
-                    optimizeCondition(stmt.getWhereCond()));
+                    maybeOptimizeCondition(stmt.getWhereCond()));
         }
         if (ast instanceof ASTNode.DeleteStmt stmt) {
             return new PlanNode.DeletePlan(stmt.getTableName(),
-                    optimizeCondition(stmt.getWhereCond()));
+                    maybeOptimizeCondition(stmt.getWhereCond()));
         }
         if (ast instanceof ASTNode.CreateTableStmt stmt) {
             // 列名清单 + 带类型的列定义（存储核心建表协议已升级为对象数组）
@@ -120,7 +191,7 @@ public class PlanGenerator {
         }
 
         // === 谓词下推：拆分 WHERE 为合取项 ===
-        List<ASTNode> conjuncts = splitConjuncts(optimizeCondition(stmt.getWhereCond()));
+        List<ASTNode> conjuncts = splitConjuncts(maybeOptimizeCondition(stmt.getWhereCond()));
         // 单表谓词按表分组（可下推）；跨表谓词留在 Join 之上
         Map<String, List<ASTNode>> perTableFilters = new HashMap<>();
         List<ASTNode> joinFilters = new ArrayList<>();
@@ -153,7 +224,7 @@ public class PlanGenerator {
             List<ASTNode> originalOnConds = new ArrayList<>();
             originalOnConds.add(null);  // 主表无 ON
             for (ASTNode.SelectStmt.JoinClause join : joins) {
-                originalOnConds.add(optimizeCondition(join.getOnCond()));
+                originalOnConds.add(maybeOptimizeCondition(join.getOnCond()));
             }
             // RBO 重排表顺序
             JoinOrderResult joinOrder = computeJoinOrder(
@@ -649,6 +720,14 @@ public class PlanGenerator {
     }
 
     // ========== 条件优化入口 ==========
+
+    /**
+     * 按开关决定是否优化条件：generate()（含 build 内部复用）据此区分
+     * "原始生成"与"生成即优化"两种模式。
+     */
+    private ASTNode maybeOptimizeCondition(ASTNode cond) {
+        return optimizeConditions ? optimizeCondition(cond) : cond;
+    }
 
     /**
      * 优化 WHERE 条件表达式。
