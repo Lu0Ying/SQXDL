@@ -142,8 +142,26 @@ public class SemanticAnalyzer {
     /**
      * 在多表上下文中解析列名：返回列所在表名。
      * 列不存在时报错；列在多表中同时存在时报歧义错误。
+     * 支持点限定标识符（table.column）：检测到 '.' 时按表名+列名直接校验，
+     * 已指定表名故不参与歧义检查。
      */
     private String resolveColumn(String col, List<String> tableNames, ASTNode node) {
+        // 点限定标识符：table.column → 拆分后直接校验表与列
+        int dot = col.indexOf('.');
+        if (dot > 0) {
+            String tableName = col.substring(0, dot);
+            String columnName = col.substring(dot + 1);
+            // 表名必须在当前查询涉及的表列表中
+            if (!tableNames.contains(tableName)) {
+                throw error("表 " + tableName + " 不在当前查询涉及的表中", node);
+            }
+            if (!catalog.columnExists(tableName, columnName)) {
+                throw error("列 " + col + " 在表 " + tableName + " 中不存在", node);
+            }
+            return tableName;
+        }
+
+        // 普通列名：在所有表中查找，存在多张表命中时报歧义
         String found = null;
         int hit = 0;
         for (String t : tableNames) {
@@ -273,7 +291,11 @@ public class SemanticAnalyzer {
     /** 多表上下文版本：递归分析表达式，列引用在多表中解析 */
     private CatalogImpl.DataType analyzeExpr(ASTNode expr, List<String> tableNames) {
         if (expr instanceof ASTNode.IdentifierExpr col) {
-            return catalog.getColumnType(resolveColumn(col.getName(), tableNames, col), col.getName());
+            String name = col.getName();
+            String tableName = resolveColumn(name, tableNames, col);
+            // 点限定标识符：拆分出纯列名再查类型
+            String columnName = name.contains(".") ? name.substring(name.indexOf('.') + 1) : name;
+            return catalog.getColumnType(tableName, columnName);
         } else if (expr instanceof ASTNode.LiteralExpr lit) {
             return literalType(lit);
         } else if (expr instanceof ASTNode.UnaryExpr unary) {
