@@ -15,4 +15,21 @@
     <packaging>jar</packaging>
     <name>SQXDL :: Parser</name>
     <description>词法与语法分析模块：Token、ASTNode、Lexer、Parser</description>
+
+    <!-- 模糊测试依赖：jqwik 属性测试引擎（随机生成 SQL 输入，验证解析器不崩溃） -->
+    <dependencies>
+        <dependency>
+            <groupId>net.jqwik</groupId>
+            <artifactId>jqwik</artifactId>
+            <version>1.8.5</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- 差分测试：H2 内存库充当"裁判"，执行 parser 还原出的规范 SQL -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>2.2.224</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
 </project>

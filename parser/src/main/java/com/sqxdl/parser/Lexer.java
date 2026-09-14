@@ -72,7 +72,12 @@ public class Lexer {
             col++;
             return new Token(Token.Type.DELIMITER, String.valueOf(c), startLine, startCol);
         }
-        throw new SqxdlException(line, col, "非法字符 '" + c + "'");
+        // 非法字符：先推进位置再抛错，保证错误恢复（skipToStatementBoundary）能继续向后扫描，不会原地死循环
+        int badLine = line;
+        int badCol = col;
+        pos++;
+        col++;
+        throw new SqxdlException(badLine, badCol, "非法字符 '" + c + "'");
     }
 
     /**
