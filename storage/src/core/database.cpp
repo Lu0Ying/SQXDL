@@ -2,7 +2,6 @@
 
 #include <filesystem>
 #include <fstream>
-#include <set>
 
 #include "row_store.h"
 #include "storage_error.h"
@@ -73,13 +72,13 @@ Database &Database::instance()
 
 bool Database::has_table(const std::string &name) const
 {
-    ensure_loaded();
+    ensure_schema();
     return tables_.find(name) != tables_.end();
 }
 
 Table &Database::get_table(const std::string &name)
 {
-    ensure_loaded();
+    ensure_schema();
     auto it = tables_.find(name);
     if (it == tables_.end())
     {
@@ -90,7 +89,7 @@ Table &Database::get_table(const std::string &name)
 
 const Table &Database::get_table(const std::string &name) const
 {
-    ensure_loaded();
+    ensure_schema();
     auto it = tables_.find(name);
     if (it == tables_.end())
     {
@@ -101,7 +100,7 @@ const Table &Database::get_table(const std::string &name) const
 
 void Database::create_table(const std::string &name, std::vector<Column> columns)
 {
-    ensure_loaded();
+    ensure_schema();
     if (tables_.find(name) != tables_.end())
     {
         throw StorageError("TABLE_ALREADY_EXISTS", "Table " + name + " already exists");
@@ -120,7 +119,7 @@ void Database::create_table(const std::string &name, std::vector<Column> columns
 
 void Database::drop_table(const std::string &name)
 {
-    ensure_loaded();
+    ensure_schema();
     auto it = tables_.find(name);
     if (it == tables_.end())
     {
@@ -144,7 +143,7 @@ void Database::drop_table(const std::string &name)
 
 std::vector<std::string> Database::table_names() const
 {
-    ensure_loaded();
+    ensure_schema();
     std::vector<std::string> names;
     names.reserve(tables_.size());
     for (const auto &entry : tables_)
@@ -154,26 +153,28 @@ std::vector<std::string> Database::table_names() const
     return names;
 }
 
-void Database::flush()
+RowStore &Database::row_store() const
 {
-    open_row_store();
-    for (const auto &entry : tables_)
-    {
-        row_store_->save_table(entry.first, entry.second.rows());
-    }
+    ensure_schema();
+    return *row_store_;
+}
+
+void Database::flush() const
+{
+    ensure_schema();
     row_store_->flush();
 }
 
-void Database::ensure_loaded() const
+void Database::ensure_schema() const
 {
     if (loaded_)
     {
         return;
     }
-    nlohmann::json catalog = read_catalog();
+    const nlohmann::json catalog = read_catalog();
 
-    // 兼容历史上行数据曾内嵌于 catalog.json 的格式：剥离并迁移到页文件
-    std::set<std::string> migrate_tables;
+    // 兼容历史上「行数据内嵌于 catalog.json」的格式：先收集，稍后迁移进页文件
+    std::map<std::string, std::vector<Row>> legacy_rows;
     for (auto it = catalog.begin(); it != catalog.end(); ++it)
     {
         const std::string name = it.key();
@@ -193,49 +194,42 @@ void Database::ensure_loaded() const
         {
             throw StorageError("INTERNAL_ERROR", "Corrupted column definition for table " + name + " in catalog file");
         }
-        Table table(name, std::move(columns));
+        tables_.emplace(name, Table(name, std::move(columns)));
+
         if (!entry.is_array() && entry.contains("rows") && entry.at("rows").is_array() &&
             !entry.at("rows").empty())
         {
+            std::vector<Row> rows;
+            rows.reserve(entry.at("rows").size());
             for (const auto &row_json : entry.at("rows"))
             {
                 try
                 {
-                    table.append_row(Row::from_json(row_json));
+                    rows.push_back(Row::from_json(row_json));
                 }
                 catch (const StorageError &)
                 {
                     throw StorageError("INTERNAL_ERROR", "Corrupted row data for table " + name + " in catalog file");
                 }
             }
-            migrate_tables.insert(name);
+            legacy_rows.emplace(name, std::move(rows));
         }
-        tables_.emplace(name, std::move(table));
     }
 
-    // 从页文件恢复行数据；内嵌于旧 catalog 的行先迁移写页，再瘦身 catalog
     open_row_store();
-    for (const auto &entry : tables_)
+
+    // 旧格式内嵌行：写入页文件后把 catalog 重写为仅含表结构
+    if (!legacy_rows.empty())
     {
-        if (migrate_tables.find(entry.first) != migrate_tables.end())
+        for (const auto &entry : legacy_rows)
         {
-            continue; // 旧格式内嵌行已就位，稍后整体写页
-        }
-        std::vector<Row> rows = row_store_->load_table(entry.first);
-        Table &table = tables_[entry.first];
-        for (auto &row : rows)
-        {
-            table.append_row(std::move(row));
-        }
-    }
-    if (!migrate_tables.empty())
-    {
-        for (const auto &name : migrate_tables)
-        {
-            row_store_->save_table(name, tables_[name].rows());
+            for (const Row &row : entry.second)
+            {
+                row_store_->insert_row(entry.first, row);
+            }
         }
         row_store_->flush();
-        save_catalog(); // 重写为仅含表结构的 catalog
+        save_catalog();
     }
 
     loaded_ = true;

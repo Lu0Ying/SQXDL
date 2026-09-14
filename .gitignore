@@ -33,3 +33,4 @@ desktop.ini
 *.tmp
 *.bak
 hs_err_pid*
+storage/.trae/*

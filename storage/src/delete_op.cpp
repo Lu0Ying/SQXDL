@@ -1,12 +1,17 @@
 #include "delete_op.h"
 
+#include <memory>
+
 #include "core/database.h"
 #include "core/expression.h"
+#include "core/row_store.h"
 #include "core/storage_error.h"
 #include "core/table.h"
 
 // 删除满足条件的行：condition 可省略（作用于全表）；
-// 受影响行数 = 匹配行数；成功后落盘
+// 受影响行数 = 匹配行数；成功后落盘。
+// 逐页流式读取行数据（不整表物化），命中行在所在页把槽位置空，
+// 整页数据被删空时回收该页，因此不重写整表
 nlohmann::json execute_delete(const nlohmann::json &plan)
 {
     size_t affected = 0;
@@ -17,27 +22,29 @@ nlohmann::json execute_delete(const nlohmann::json &plan)
         {
             throw StorageError("INVALID_PLAN", "Missing or invalid string field: table");
         }
-        Table &table = Database::instance().get_table(plan.at("table").get<std::string>());
+        const std::string table_name = plan.at("table").get<std::string>();
+        const Table &table = Database::instance().get_table(table_name);
 
         // condition 可省略；省略时删除全表行
         ExpressionPtr condition = plan.contains("condition")
                                       ? parse_expression(plan.at("condition"))
                                       : nullptr;
         const std::vector<std::string> names = table.column_names();
+        RowStore &store = Database::instance().row_store();
 
-        // 从后往前删除，避免索引因删除而偏移
-        for (size_t i = table.row_count(); i > 0; --i)
+        std::unique_ptr<RowIterator> iterator = store.scan(table_name);
+        Row row;
+        while (iterator->next(row))
         {
-            const size_t index = i - 1;
             bool matched = true;
             if (condition)
             {
-                const EvalContext ctx(names, table.row(index));
+                const EvalContext ctx(names, row);
                 matched = condition->evaluate(ctx).truth_value();
             }
-            if (matched)
+            // 已被删除的槽位返回 false，不计入受影响行数
+            if (matched && store.delete_row(table_name, iterator->last_rid()))
             {
-                table.remove_row(index);
                 ++affected;
             }
         }
