@@ -760,4 +760,154 @@ class SemanticAnalyzerTest {
                 List.of(new ASTNode.SelectStmt.OrderItem("cname", "ASC")));
         assertDoesNotThrow(() -> analyzer.analyze(stmt));
     }
+
+    // ========== 点限定标识符（table.column） ==========
+
+    @Test
+    void qualifiedColumn_inSelectList_succeeds() {
+        // SELECT student.id FROM student JOIN course ON student.id = course.cid
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "student.id"),
+                new ASTNode.IdentifierExpr(1, 40, "course.cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("student.id"), null,
+                List.of(join), List.of(), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void qualifiedColumn_resolvesAmbiguity_succeeds() {
+        // 两表都有 id 列，用 student.id 消歧义
+        catalog.createTableWithTypes("enrollment", Arrays.asList(
+                new CatalogImpl.ColumnInfo("id", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("student_id", CatalogImpl.DataType.INT)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "student.id"),
+                new ASTNode.IdentifierExpr(1, 40, "enrollment.student_id"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("enrollment", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("student.id"), null,
+                List.of(join), List.of(), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void qualifiedColumn_tableNotInQuery_throwsException() {
+        // student.id 但 student 表不在查询中（只有 course）
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "cid"),
+                new ASTNode.IdentifierExpr(1, 40, "course.cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        // 主表 nonexistent，但 JOIN course
+        // 这里改为：主表是 course，引用 nonexistent.id
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "course", Arrays.asList("nonexistent.id"), null,
+                List.of(), List.of(), List.of());
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("不在当前查询涉及的表中"));
+    }
+
+    @Test
+    void qualifiedColumn_columnNotExists_throwsException() {
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "student.id"),
+                new ASTNode.IdentifierExpr(1, 40, "course.cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("course.nonexistent"), null,
+                List.of(join), List.of(), List.of());
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("不存在"));
+    }
+
+    @Test
+    void qualifiedColumn_inOnCondition_succeeds() {
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        // ON student.id = course.cid — 两边都用点限定
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "student.id"),
+                new ASTNode.IdentifierExpr(1, 40, "course.cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("student.name", "course.cname"), null,
+                List.of(join), List.of(), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void qualifiedColumn_inWhere_succeeds() {
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "student.id"),
+                new ASTNode.IdentifierExpr(1, 40, "course.cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        // WHERE student.age > 18
+        ASTNode.BinaryExpr whereCond = new ASTNode.BinaryExpr(1, 50, ">",
+                new ASTNode.IdentifierExpr(1, 48, "student.age"),
+                new ASTNode.LiteralExpr(1, 55, "18", ASTNode.LiteralExpr.Kind.NUMBER));
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("student.name"), whereCond,
+                List.of(join), List.of(), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void qualifiedColumn_inGroupBy_succeeds() {
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "student.id"),
+                new ASTNode.IdentifierExpr(1, 40, "course.cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("student.age"), null,
+                List.of(join), List.of("student.age"), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void qualifiedColumn_inOrderBy_succeeds() {
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "student.id"),
+                new ASTNode.IdentifierExpr(1, 40, "course.cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("student.name"), null,
+                List.of(join), List.of(),
+                List.of(new ASTNode.SelectStmt.OrderItem("course.cname", "ASC")));
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
 }

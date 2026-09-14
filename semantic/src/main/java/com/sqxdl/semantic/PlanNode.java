@@ -15,22 +15,35 @@ public abstract class PlanNode {
 
     /**
      * 顺序扫描计划：叶子节点，对 tableName 对应表做全表扫描。
+     * columns 为 null 时表示全表扫描；非 null 时只读取指定列（投影下推）。
      */
     public static class SeqScanPlan extends PlanNode {
 
         private final String tableName;
+        private final List<String> columns;
 
         public SeqScanPlan(String tableName) {
+            this(tableName, null);
+        }
+
+        public SeqScanPlan(String tableName, List<String> columns) {
             this.tableName = tableName;
+            this.columns = columns;
         }
 
         public String getTableName() {
             return tableName;
         }
 
+        public List<String> getColumns() {
+            return columns;
+        }
+
         @Override
         public String toString() {
-            return "SeqScan{table=" + tableName + "}";
+            return columns == null
+                    ? "SeqScan{table=" + tableName + "}"
+                    : "SeqScan{table=" + tableName + ", columns=" + columns + "}";
         }
     }
 
@@ -470,6 +483,9 @@ public abstract class PlanNode {
     private static void formatNodeDetails(StringBuilder sb, PlanNode node, int depth) {
         if (node instanceof SeqScanPlan p) {
             detailLine(sb, depth, "table", p.getTableName());
+            if (p.getColumns() != null) {
+                detailLine(sb, depth, "columns", p.getColumns());
+            }
         } else if (node instanceof FilterPlan p) {
             detailLine(sb, depth, "condition", formatExpr(p.getCondition()));
         } else if (node instanceof ProjectPlan p) {

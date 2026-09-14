@@ -865,7 +865,9 @@ class PlanGeneratorTest {
         assertTrue(json.contains("\"op\":\"filter\",\"condition\":{\"type\":\"binary\",\"op\":\">\""));
         assertTrue(json.contains("\"left\":{\"type\":\"column\",\"name\":\"id\"}"));
         assertTrue(json.contains("\"right\":{\"type\":\"literal\",\"value\":1}"));
-        assertTrue(json.contains("\"child\":{\"op\":\"scan\",\"table\":\"student\"}"));
+        assertTrue(json.contains("\"op\":\"scan\",\"table\":\"student\""));
+        // 列裁剪：SeqScan 应包含 columns 字段（只读 id, name）
+        assertTrue(json.contains("\"columns\":[\"id\",\"name\"]"));
     }
 
     // ========== SHOW TABLES ==========
@@ -1218,12 +1220,16 @@ class PlanGeneratorTest {
                 List.of(join), List.of(), List.of());
         PlanNode plan = generator.generate(stmt);
 
-        // Project → Filter → Join → [SeqScan, SeqScan]
+        // 谓词下推：age > 18 只涉及 student → 下推到 SeqScan[student] 之上
+        // Project → Join → [Filter[age>18] → SeqScan[student], SeqScan[course]]
         assertInstanceOf(PlanNode.ProjectPlan.class, plan);
-        PlanNode filter = ((PlanNode.ProjectPlan) plan).getChild();
-        assertInstanceOf(PlanNode.FilterPlan.class, filter);
-        PlanNode joinNode = ((PlanNode.FilterPlan) filter).getChild();
+        PlanNode joinNode = ((PlanNode.ProjectPlan) plan).getChild();
         assertInstanceOf(PlanNode.JoinPlan.class, joinNode);
+        PlanNode.JoinPlan jp = (PlanNode.JoinPlan) joinNode;
+        // student 子节点应有 Filter
+        assertInstanceOf(PlanNode.FilterPlan.class, jp.getChildren().get(0));
+        // course 子节点无 Filter
+        assertInstanceOf(PlanNode.SeqScanPlan.class, jp.getChildren().get(1));
     }
 
     @Test
@@ -1419,7 +1425,8 @@ class PlanGeneratorTest {
                 List.of(new ASTNode.SelectStmt.OrderItem("cname", "ASC")));
         PlanNode plan = generator.generate(stmt);
 
-        // Project → OrderBy → GroupBy → Filter → Join → [SeqScan, SeqScan]
+        // 谓词下推：age > 18 只涉及 student → 下推到 SeqScan[student] 之上
+        // Project → OrderBy → GroupBy → Join → [Filter[age>18]→SeqScan[student], SeqScan[course]]
         assertInstanceOf(PlanNode.ProjectPlan.class, plan);
         PlanNode orderBy = ((PlanNode.ProjectPlan) plan).getChild();
         assertInstanceOf(PlanNode.OrderByPlan.class, orderBy);
@@ -1427,12 +1434,12 @@ class PlanGeneratorTest {
         PlanNode groupBy = ((PlanNode.OrderByPlan) orderBy).getChild();
         assertInstanceOf(PlanNode.GroupByPlan.class, groupBy);
 
-        PlanNode filter = ((PlanNode.GroupByPlan) groupBy).getChild();
-        assertInstanceOf(PlanNode.FilterPlan.class, filter);
-
-        PlanNode joinNode = ((PlanNode.FilterPlan) filter).getChild();
+        PlanNode joinNode = ((PlanNode.GroupByPlan) groupBy).getChild();
         assertInstanceOf(PlanNode.JoinPlan.class, joinNode);
-        assertEquals(2, ((PlanNode.JoinPlan) joinNode).getChildren().size());
+        PlanNode.JoinPlan jp = (PlanNode.JoinPlan) joinNode;
+        assertEquals(2, jp.getChildren().size());
+        // student 子节点应有下推的 Filter
+        assertInstanceOf(PlanNode.FilterPlan.class, jp.getChildren().get(0));
     }
 
     @Test
@@ -1639,5 +1646,299 @@ class PlanGeneratorTest {
         ASTNode cond = ((PlanNode.FilterPlan) filter).getCondition();
         assertInstanceOf(ASTNode.UnaryExpr.class, cond);
         assertEquals("NOT", ((ASTNode.UnaryExpr) cond).getOp());
+    }
+
+    // ========== 谓词下推 ==========
+
+    @Test
+    void predicatePushdown_singleTableWhere_filterOnSeqScan() {
+        // WHERE age > 18 → Filter 直接在 SeqScan 之上（而非 Project 之下）
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 20, ">",
+                new ASTNode.IdentifierExpr(1, 18, "age"),
+                lit(1, 25, "18", Kind.NUMBER));
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), cond,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        // Project → Filter → SeqScan
+        assertInstanceOf(PlanNode.ProjectPlan.class, plan);
+        PlanNode filter = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.FilterPlan.class, filter);
+        assertInstanceOf(PlanNode.SeqScanPlan.class, ((PlanNode.FilterPlan) filter).getChild());
+    }
+
+    @Test
+    void predicatePushdown_joinWhere_singleTablePredicate_pushedToScan() {
+        // WHERE age > 18 (student) → 下推到 SeqScan[student]
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.BinaryExpr whereCond = new ASTNode.BinaryExpr(1, 50, ">",
+                new ASTNode.IdentifierExpr(1, 48, "age"),
+                lit(1, 55, "18", Kind.NUMBER));
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), whereCond,
+                List.of(join), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        // Project → Join → [Filter[age>18]→SeqScan[student], SeqScan[course]]
+        PlanNode joinNode = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.JoinPlan.class, joinNode);
+        PlanNode.JoinPlan jp = (PlanNode.JoinPlan) joinNode;
+        // student 有下推的 Filter
+        assertInstanceOf(PlanNode.FilterPlan.class, jp.getChildren().get(0));
+        // course 无 Filter
+        assertInstanceOf(PlanNode.SeqScanPlan.class, jp.getChildren().get(1));
+    }
+
+    @Test
+    void predicatePushdown_joinWhere_crossTablePredicate_staysOnJoin() {
+        // WHERE student.id = course.cid → 跨表条件，留在 Join 之上
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "student.id"),
+                new ASTNode.IdentifierExpr(1, 40, "course.cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        // WHERE student.age > course.credit — 跨表条件
+        ASTNode.BinaryExpr whereCond = new ASTNode.BinaryExpr(1, 50, ">",
+                new ASTNode.IdentifierExpr(1, 48, "student.age"),
+                new ASTNode.IdentifierExpr(1, 60, "course.cname"));
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("student.name"), whereCond,
+                List.of(join), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        // Project → Filter → Join → [SeqScan, SeqScan]
+        // 跨表谓词留在 Join 之上
+        PlanNode filter = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.FilterPlan.class, filter);
+        PlanNode joinNode = ((PlanNode.FilterPlan) filter).getChild();
+        assertInstanceOf(PlanNode.JoinPlan.class, joinNode);
+    }
+
+    @Test
+    void predicatePushdown_joinWhereMixed_singlePushedCrossKept() {
+        // WHERE age > 18 AND student.id = course.cid
+        // age > 18 下推到 student；student.id = course.cid 留在 Join
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "student.id"),
+                new ASTNode.IdentifierExpr(1, 40, "course.cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.BinaryExpr singleTable = new ASTNode.BinaryExpr(1, 50, ">",
+                new ASTNode.IdentifierExpr(1, 48, "age"),
+                lit(1, 55, "18", Kind.NUMBER));
+        ASTNode.BinaryExpr crossTable = new ASTNode.BinaryExpr(1, 65, "=",
+                new ASTNode.IdentifierExpr(1, 63, "student.id"),
+                new ASTNode.IdentifierExpr(1, 75, "course.cid"));
+        ASTNode.BinaryExpr whereCond = new ASTNode.BinaryExpr(1, 60, "AND", singleTable, crossTable);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("student.name"), whereCond,
+                List.of(join), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        // Project → Filter[student.id=course.cid] → Join → [Filter[age>18]→SeqScan[student], SeqScan[course]]
+        PlanNode filter = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.FilterPlan.class, filter);  // 跨表 Filter
+        PlanNode joinNode = ((PlanNode.FilterPlan) filter).getChild();
+        assertInstanceOf(PlanNode.JoinPlan.class, joinNode);
+        PlanNode.JoinPlan jp = (PlanNode.JoinPlan) joinNode;
+        // student 有下推的 Filter
+        assertInstanceOf(PlanNode.FilterPlan.class, jp.getChildren().get(0));
+        // course 无 Filter
+        assertInstanceOf(PlanNode.SeqScanPlan.class, jp.getChildren().get(1));
+    }
+
+    // ========== 列裁剪 / 投影下推 ==========
+
+    @Test
+    void columnPruning_singleTable_onlyNeededColumns() {
+        // SELECT name FROM student → SeqScan 只读 name
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), null,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        // Project → SeqScan[columns: [name]]
+        assertInstanceOf(PlanNode.ProjectPlan.class, plan);
+        PlanNode scan = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.SeqScanPlan.class, scan);
+        List<String> cols = ((PlanNode.SeqScanPlan) scan).getColumns();
+        assertNotNull(cols);
+        assertEquals(1, cols.size());
+        assertTrue(cols.contains("name"));
+    }
+
+    @Test
+    void columnPruning_whereAddsNeededColumns() {
+        // SELECT name FROM student WHERE age > 18 → SeqScan 读 name + age
+        ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 20, ">",
+                new ASTNode.IdentifierExpr(1, 18, "age"),
+                lit(1, 25, "18", Kind.NUMBER));
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), cond,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        // Project → Filter → SeqScan[columns: name, age]
+        PlanNode filter = ((PlanNode.ProjectPlan) plan).getChild();
+        PlanNode scan = ((PlanNode.FilterPlan) filter).getChild();
+        assertInstanceOf(PlanNode.SeqScanPlan.class, scan);
+        List<String> cols = ((PlanNode.SeqScanPlan) scan).getColumns();
+        assertNotNull(cols);
+        assertEquals(2, cols.size());
+        assertTrue(cols.contains("name"));
+        assertTrue(cols.contains("age"));
+    }
+
+    @Test
+    void columnPruning_orderByAddsNeededColumns() {
+        // SELECT name FROM student ORDER BY age → SeqScan 读 name + age
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), null,
+                List.of(), List.of(),
+                List.of(new ASTNode.SelectStmt.OrderItem("age", "ASC")));
+        PlanNode plan = generator.generate(stmt);
+
+        // Project → OrderBy → SeqScan[columns: name, age]
+        PlanNode orderBy = ((PlanNode.ProjectPlan) plan).getChild();
+        PlanNode scan = ((PlanNode.OrderByPlan) orderBy).getChild();
+        assertInstanceOf(PlanNode.SeqScanPlan.class, scan);
+        List<String> cols = ((PlanNode.SeqScanPlan) scan).getColumns();
+        assertNotNull(cols);
+        assertTrue(cols.contains("name"));
+        assertTrue(cols.contains("age"));
+    }
+
+    @Test
+    void columnPruning_groupByAddsNeededColumns() {
+        // SELECT age FROM student GROUP BY age → SeqScan 读 age
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("age"), null,
+                List.of(), List.of("age"), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        // Project → GroupBy → SeqScan[columns: age]
+        PlanNode groupBy = ((PlanNode.ProjectPlan) plan).getChild();
+        PlanNode scan = ((PlanNode.GroupByPlan) groupBy).getChild();
+        assertInstanceOf(PlanNode.SeqScanPlan.class, scan);
+        List<String> cols = ((PlanNode.SeqScanPlan) scan).getColumns();
+        assertNotNull(cols);
+        assertEquals(1, cols.size());
+        assertTrue(cols.contains("age"));
+    }
+
+    @Test
+    void columnPruning_selectStar_allColumns() {
+        // SELECT * FROM student → SeqScan 无列限制（columns 为 null）
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("*"), null,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        PlanNode scan = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.SeqScanPlan.class, scan);
+        assertNull(((PlanNode.SeqScanPlan) scan).getColumns());
+    }
+
+    @Test
+    void columnPruning_joinEachTableSeparately() {
+        // SELECT student.name, course.cname FROM student JOIN course ON id=cid
+        // student 只读 name + id；course 只读 cname + cid（= 全部列）
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR),
+                new CatalogImpl.ColumnInfo("credit", CatalogImpl.DataType.INT)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name", "cname"), null,
+                List.of(join), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        PlanNode joinNode = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.JoinPlan.class, joinNode);
+        PlanNode.JoinPlan jp = (PlanNode.JoinPlan) joinNode;
+
+        // student: 只读 name + id（不读 age）
+        PlanNode studentScan = jp.getChildren().get(0);
+        assertInstanceOf(PlanNode.SeqScanPlan.class, studentScan);
+        List<String> studentCols = ((PlanNode.SeqScanPlan) studentScan).getColumns();
+        assertNotNull(studentCols);
+        assertTrue(studentCols.contains("name"));
+        assertTrue(studentCols.contains("id"));
+        assertFalse(studentCols.contains("age"));
+
+        // course: 只读 cname + cid（不读 credit）
+        PlanNode courseScan = jp.getChildren().get(1);
+        assertInstanceOf(PlanNode.SeqScanPlan.class, courseScan);
+        List<String> courseCols = ((PlanNode.SeqScanPlan) courseScan).getColumns();
+        assertNotNull(courseCols);
+        assertTrue(courseCols.contains("cname"));
+        assertTrue(courseCols.contains("cid"));
+        assertFalse(courseCols.contains("credit"));
+    }
+
+    @Test
+    void columnPruning_allColumnsRead_noColumnList() {
+        // SELECT id, name, age FROM student → 全部列 → columns 为 null
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id", "name", "age"), null,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        PlanNode scan = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.SeqScanPlan.class, scan);
+        // 全部列 → 不裁剪
+        assertNull(((PlanNode.SeqScanPlan) scan).getColumns());
+    }
+
+    @Test
+    void toJson_scanWithColumns() {
+        // SELECT name FROM student → JSON 中 SeqScan 有 columns 字段
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), null,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+        String json = generator.toJson(plan);
+
+        assertTrue(json.contains("\"op\":\"scan\""));
+        assertTrue(json.contains("\"table\":\"student\""));
+        assertTrue(json.contains("\"columns\":[\"name\"]"));
+    }
+
+    @Test
+    void formatPlan_scanWithColumns() {
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), null,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        String output = PlanNode.formatPlan(plan);
+        assertTrue(output.contains("SeqScanPlan"));
+        assertTrue(output.contains("student"));
+        assertTrue(output.contains("name"));  // 列名出现在属性中
     }
 }

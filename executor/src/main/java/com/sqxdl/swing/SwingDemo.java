@@ -342,7 +342,7 @@ public class SwingDemo extends JFrame {
 
     /** 左侧点击表：走 SELECT * FROM 表 的完整流水线加载该表数据。 */
     private void showTable(String tableName) {
-        executeSql("SELECT * FROM " + tableName);
+        executeSql("SELECT * FROM " + tableName + ";");
     }
 
     /** 执行单条 SQL：调用引擎流水线，渲染结果、回退提示与耗时。 */
@@ -366,7 +366,7 @@ public class SwingDemo extends JFrame {
                 // 写操作成功后刷新当前表，让界面立即反映数据变化
                 String current = tableList.getSelectedValue();
                 if (current != null) {
-                    executeSql("SELECT * FROM " + current, false);
+                    executeSql("SELECT * FROM " + current + ";", false);
                 }
             }
             case ERROR -> log("❌ [" + result.getErrorCode() + "] " + result.getErrorMessage());
