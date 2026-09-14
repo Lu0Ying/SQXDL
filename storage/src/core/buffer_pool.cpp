@@ -141,6 +141,11 @@ uint32_t BufferPoolManager::disk_page_count() const
     return disk_manager_.page_count();
 }
 
+bool BufferPoolManager::is_allocated_page(page_id_t page_id) const
+{
+    return disk_manager_.is_allocated_page(page_id);
+}
+
 Page *BufferPoolManager::acquire_frame()
 {
     if (!free_frames_.empty())

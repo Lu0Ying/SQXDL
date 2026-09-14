@@ -54,13 +54,16 @@ public:
     // 页正被占用（pin > 0）返回 false，页号非法抛 INTERNAL_ERROR
     bool delete_page(page_id_t page_id);
 
-    // 将缓冲池中所有脏页写回磁盘
+    // 将缓冲池中所有脏页写回磁盘（脏页立即持久化，不必等淘汰）
     void flush_all();
 
     size_t pool_size() const;
 
     // 磁盘总页数（含头页）
     uint32_t disk_page_count() const;
+
+    // 页号有效且当前已分配（未回收）
+    bool is_allocated_page(page_id_t page_id) const;
 
 private:
     // 获取可复用帧：优先空闲帧，否则淘汰 LRU 页（脏页先写回）；

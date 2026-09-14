@@ -36,3 +36,7 @@ hs_err_pid*
 
 # ===== jqwik 属性测试的失败种子缓存（FuzzTest 运行时生成的文件） =====
 .jqwik-database
+
+# ===== storage 模块本地调试产物 =====
+storage/.trae/*
+
