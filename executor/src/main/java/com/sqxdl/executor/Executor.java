@@ -20,7 +20,9 @@ public class Executor {
         switch (result.getType()) {
             case RESULTSET -> printResultSet(result);
             case ROWCOUNT -> System.out.println("执行成功，受影响行数: " + result.getRowsAffected());
-            case ERROR -> System.err.println("错误[" + result.getErrorCode() + "]: " + result.getErrorMessage());
+            // 错误也走 stdout：与提示符同通道保证 REPL 输出顺序
+            // （stderr 无缓冲、IDEA 分通道合并显示会乱序，错误会"迟到"）
+            case ERROR -> System.out.println("错误[" + result.getErrorCode() + "]: " + result.getErrorMessage());
         }
     }
 

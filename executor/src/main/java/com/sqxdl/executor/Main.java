@@ -8,6 +8,7 @@ import org.jline.reader.UserInterruptException;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 
+import java.io.Console;
 import java.io.IOException;
 import java.util.Scanner;
 
@@ -44,6 +45,12 @@ public class Main {
     private static void runRepl(SqlEngine engine) {
         Executor renderer = new Executor();
         CommandHistory history = new CommandHistory();
+        // IDEA Run 窗口/输入重定向没有真终端：直接走 Scanner 管道路径，
+        // 避免初始化 JLine 触发 JDK 24 native access 警告与 dumb terminal 日志
+        if (!hasRealConsole()) {
+            runPiped(engine, renderer, history);
+            return;
+        }
         Terminal terminal = openSystemTerminal();
         if (terminal != null) {
             runInteractive(engine, renderer, history, terminal);
@@ -79,11 +86,17 @@ public class Main {
         }
     }
 
-    /** 管道/重定向路径：Scanner 循环（无 TTY，方向键不可用，用元命令等效替代）。 */
+    /** 管道路径：Scanner 循环（IDEA Run 窗口/重定向；方向键不可用，用元命令等效替代）。 */
     private static void runPiped(SqlEngine engine, Executor renderer, CommandHistory history) {
+        System.out.println("SQXDL 交互式终端已启动。输入 SQL 后回车执行，输入 exit 退出。");
         try (Scanner scanner = new Scanner(System.in)) {
-            // hasNextLine 先探测输入流结束（Ctrl+Z / Ctrl+D），避免直接 nextLine 抛异常
-            while (scanner.hasNextLine()) {
+            while (true) {
+                System.out.print("sqxdl> "); // IDEA Run 窗口下保持交互提示符
+                System.out.flush(); // print 不触发行缓冲刷新，需显式清空，否则提示符会迟到
+                // hasNextLine 先探测输入流结束（Ctrl+Z / Ctrl+D），避免直接 nextLine 抛异常
+                if (!scanner.hasNextLine()) {
+                    break;
+                }
                 if (!processInput(engine, renderer, history, scanner.nextLine().trim())) {
                     break;
                 }
@@ -136,9 +149,31 @@ public class Main {
             }
             renderer.render(result);
         } catch (Exception e) {
-            System.err.println("⚠执行出错: " + e.getMessage());
+            // REPL 循环内统一走 stdout：与提示符同通道保证输出顺序（见 Executor.render）
+            System.out.println("⚠执行出错: " + e.getMessage());
         }
         return true;
+    }
+
+    /**
+     * 判断是否挂接了可交互的真实终端（真 TTY）。
+     * 注意：JDK 22 起即使无终端，{@link System#console()} 也可能返回非 null，
+     * 需用 JDK 22 新增的 {@code Console.isTerminal()} 精确判断；
+     * 该 API 不在项目编译目标（17）内，故反射调用以同时兼容 JDK 21/24 运行时。
+     */
+    private static boolean hasRealConsole() {
+        Console console = System.console();
+        if (console == null) {
+            return false; // JDK 21 及以下无终端、或被重定向
+        }
+        try {
+            Object real = Console.class.getMethod("isTerminal").invoke(console);
+            return (Boolean) real; // JDK 22+：仅真终端返回 true
+        } catch (NoSuchMethodException e) {
+            return true; // JDK 21 及以下：console 非 null 即真终端
+        } catch (ReflectiveOperationException e) {
+            return true;
+        }
     }
 
     /** 尝试打开系统终端；无 TTY（管道/重定向）或无可用 provider 时返回 null。 */
