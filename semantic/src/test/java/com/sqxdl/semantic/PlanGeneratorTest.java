@@ -1040,6 +1040,13 @@ class PlanGeneratorTest {
         assertEquals(expectedColumns, ((PlanNode.ProjectPlan) plan).getColumns());
     }
 
+    /** 从 SeqScan 或 Filter→SeqScan 中提取表名 */
+    private String getScanTableName(PlanNode node) {
+        if (node instanceof PlanNode.SeqScanPlan s) return s.getTableName();
+        if (node instanceof PlanNode.FilterPlan f) return getScanTableName(f.getChild());
+        return null;
+    }
+
     // ========== DOUBLE 常量折叠 ==========
 
     @Test
@@ -2153,5 +2160,305 @@ class PlanGeneratorTest {
         assertTrue(output.contains("JoinPlan"));
         assertTrue(output.contains("algorithms"));
         assertTrue(output.contains("HASH"));
+    }
+
+    // ========== RBO JOIN 顺序优化 ==========
+
+    @Test
+    void rboJoinOrder_noPredicate_keepsOriginalOrder() {
+        // SELECT name FROM student JOIN course ON id=cid (无 WHERE)
+        // RBO: 无谓词 → 主表 student 在第一位
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), null,
+                List.of(join), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        PlanNode.JoinPlan jp = (PlanNode.JoinPlan) ((PlanNode.ProjectPlan) plan).getChild();
+        // 无谓词 → 保持原始顺序
+        assertEquals("student", getScanTableName(jp.getChildren().get(0)));
+        assertEquals("course", getScanTableName(jp.getChildren().get(1)));
+        // 左表 ON 为 null，第二表 ON 为 id=cid
+        assertNull(jp.getOnConditions().get(0));
+        assertNotNull(jp.getOnConditions().get(1));
+    }
+
+    @Test
+    void rboJoinOrder_predicateOnJoinTable_becomesFirst() {
+        // SELECT name FROM student JOIN course ON id=cid WHERE cid > 100
+        // cid 属于 course → course 有单表谓词 → RBO 将 course 放在第一位
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        // WHERE cid > 100 (单表谓词，在 course 上)
+        ASTNode.BinaryExpr whereCond = new ASTNode.BinaryExpr(1, 50, ">",
+                new ASTNode.IdentifierExpr(1, 48, "cid"),
+                lit(1, 55, "100", Kind.NUMBER));
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), whereCond,
+                List.of(join), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        PlanNode.JoinPlan jp = (PlanNode.JoinPlan) ((PlanNode.ProjectPlan) plan).getChild();
+        // RBO: course（有谓词）在第一位，student 在第二位
+        assertEquals("course", getScanTableName(jp.getChildren().get(0)));
+        assertEquals("student", getScanTableName(jp.getChildren().get(1)));
+        // course 有 Filter（cid > 100 下推）
+        assertInstanceOf(PlanNode.FilterPlan.class, jp.getChildren().get(0));
+        // student 无 Filter
+        assertInstanceOf(PlanNode.SeqScanPlan.class, jp.getChildren().get(1));
+        // ON 条件重映射：左表 null，第二表为 id=cid
+        assertNull(jp.getOnConditions().get(0));
+        assertNotNull(jp.getOnConditions().get(1));
+        // 算法：左表 NESTED_LOOP，第二表 HASH（等值连接）
+        assertEquals(PlanNode.JoinAlgorithm.NESTED_LOOP, jp.getAlgorithms().get(0));
+        assertEquals(PlanNode.JoinAlgorithm.HASH, jp.getAlgorithms().get(1));
+    }
+
+    @Test
+    void rboJoinOrder_threeTable_predicateOnLastCausesReorder() {
+        // SELECT name FROM student JOIN course ON id=cid JOIN enrollment ON id=eid WHERE eid > 100
+        // eid 属于 enrollment → enrollment 有单表谓词 → RBO: enrollment, student, course
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        catalog.createTableWithTypes("enrollment", Arrays.asList(
+                new CatalogImpl.ColumnInfo("eid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("grade", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr on1 = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.BinaryExpr on2 = new ASTNode.BinaryExpr(1, 60, "=",
+                new ASTNode.IdentifierExpr(1, 58, "id"),
+                new ASTNode.IdentifierExpr(1, 65, "eid"));
+        ASTNode.SelectStmt.JoinClause join1 = new ASTNode.SelectStmt.JoinClause("course", on1);
+        ASTNode.SelectStmt.JoinClause join2 = new ASTNode.SelectStmt.JoinClause("enrollment", on2);
+
+        // WHERE eid > 100 (在 enrollment 上)
+        ASTNode.BinaryExpr whereCond = new ASTNode.BinaryExpr(1, 80, ">",
+                new ASTNode.IdentifierExpr(1, 78, "eid"),
+                lit(1, 85, "100", Kind.NUMBER));
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), whereCond,
+                List.of(join1, join2), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        PlanNode.JoinPlan jp = (PlanNode.JoinPlan) ((PlanNode.ProjectPlan) plan).getChild();
+        assertEquals(3, jp.getChildren().size());
+
+        // RBO 顺序: enrollment (有谓词) → student (连接 via id=eid) → course (连接 via id=cid)
+        assertEquals("enrollment", getScanTableName(jp.getChildren().get(0)));
+        assertEquals("student", getScanTableName(jp.getChildren().get(1)));
+        assertEquals("course", getScanTableName(jp.getChildren().get(2)));
+
+        // enrollment 有 Filter（eid > 100 下推）
+        assertInstanceOf(PlanNode.FilterPlan.class, jp.getChildren().get(0));
+
+        // ON 条件: [null, id=eid, id=cid]
+        assertNull(jp.getOnConditions().get(0));
+        assertNotNull(jp.getOnConditions().get(1));
+        assertNotNull(jp.getOnConditions().get(2));
+
+        // 算法: [NESTED_LOOP, HASH, HASH]
+        assertEquals(PlanNode.JoinAlgorithm.NESTED_LOOP, jp.getAlgorithms().get(0));
+        assertEquals(PlanNode.JoinAlgorithm.HASH, jp.getAlgorithms().get(1));
+        assertEquals(PlanNode.JoinAlgorithm.HASH, jp.getAlgorithms().get(2));
+    }
+
+    @Test
+    void rboJoinOrder_crossTableWhere_doesNotReorder() {
+        // SELECT name FROM student JOIN course ON id=cid WHERE student.id = course.cid
+        // 跨表谓词不参与 RBO 排序 → 保持原始顺序
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        // WHERE student.id = course.cid (跨表)
+        ASTNode.BinaryExpr whereCond = new ASTNode.BinaryExpr(1, 50, "=",
+                new ASTNode.IdentifierExpr(1, 48, "student.id"),
+                new ASTNode.IdentifierExpr(1, 55, "course.cid"));
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("student.name"), whereCond,
+                List.of(join), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        // 跨表谓词留在 Join 之上
+        assertInstanceOf(PlanNode.FilterPlan.class, ((PlanNode.ProjectPlan) plan).getChild());
+        PlanNode.FilterPlan filter = (PlanNode.FilterPlan) ((PlanNode.ProjectPlan) plan).getChild();
+        PlanNode.JoinPlan jp = (PlanNode.JoinPlan) filter.getChild();
+
+        // 无单表谓词 → 保持原始顺序
+        assertEquals("student", getScanTableName(jp.getChildren().get(0)));
+        assertEquals("course", getScanTableName(jp.getChildren().get(1)));
+    }
+
+    @Test
+    void rboJoinOrder_equalPredicates_keepsOriginalOrder() {
+        // SELECT name FROM student JOIN course ON id=cid WHERE age > 18 AND cid > 100
+        // 两表都有 1 个谓词，同谓词数 → 保持原始顺序（主表优先）
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        // WHERE age > 18 AND cid > 100
+        ASTNode.BinaryExpr pred1 = new ASTNode.BinaryExpr(1, 50, ">",
+                new ASTNode.IdentifierExpr(1, 48, "age"),
+                lit(1, 55, "18", Kind.NUMBER));
+        ASTNode.BinaryExpr pred2 = new ASTNode.BinaryExpr(1, 65, ">",
+                new ASTNode.IdentifierExpr(1, 63, "cid"),
+                lit(1, 70, "100", Kind.NUMBER));
+        ASTNode.BinaryExpr whereCond = new ASTNode.BinaryExpr(1, 60, "AND", pred1, pred2);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), whereCond,
+                List.of(join), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        PlanNode.JoinPlan jp = (PlanNode.JoinPlan) ((PlanNode.ProjectPlan) plan).getChild();
+        // 同谓词数（各1个）→ 保持原始顺序
+        assertEquals("student", getScanTableName(jp.getChildren().get(0)));
+        assertEquals("course", getScanTableName(jp.getChildren().get(1)));
+        // 两表都有 Filter
+        assertInstanceOf(PlanNode.FilterPlan.class, jp.getChildren().get(0));
+        assertInstanceOf(PlanNode.FilterPlan.class, jp.getChildren().get(1));
+    }
+
+    @Test
+    void rboJoinOrder_morePredicates_winsOverMainTable() {
+        // SELECT name FROM student JOIN course ON id=cid
+        // WHERE age > 18 AND cid > 100 AND cid < 200
+        // student: 1 predicate (age>18), course: 2 predicates (cid>100, cid<200)
+        // RBO: course (2 predicates) first
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        // WHERE age > 18 AND cid > 100 AND cid < 200
+        ASTNode.BinaryExpr pred1 = new ASTNode.BinaryExpr(1, 50, ">",
+                new ASTNode.IdentifierExpr(1, 48, "age"),
+                lit(1, 55, "18", Kind.NUMBER));
+        ASTNode.BinaryExpr pred2 = new ASTNode.BinaryExpr(1, 65, ">",
+                new ASTNode.IdentifierExpr(1, 63, "cid"),
+                lit(1, 70, "100", Kind.NUMBER));
+        ASTNode.BinaryExpr pred3 = new ASTNode.BinaryExpr(1, 80, "<",
+                new ASTNode.IdentifierExpr(1, 78, "cid"),
+                lit(1, 85, "200", Kind.NUMBER));
+        ASTNode.BinaryExpr whereCond = new ASTNode.BinaryExpr(1, 60, "AND", pred1,
+                new ASTNode.BinaryExpr(1, 75, "AND", pred2, pred3));
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), whereCond,
+                List.of(join), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        PlanNode.JoinPlan jp = (PlanNode.JoinPlan) ((PlanNode.ProjectPlan) plan).getChild();
+        // course 有更多谓词 → 排在第一位
+        assertEquals("course", getScanTableName(jp.getChildren().get(0)));
+        assertEquals("student", getScanTableName(jp.getChildren().get(1)));
+    }
+
+    @Test
+    void rboJoinOrder_threeTable_chainReorderedByPredicate() {
+        // SELECT name FROM A JOIN B ON a.id=b.aid JOIN C ON b.id=c.bid WHERE c.x > 5
+        // C 有谓词 → RBO: C, B, A
+        catalog.createTableWithTypes("B", Arrays.asList(
+                new CatalogImpl.ColumnInfo("bid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("aid", CatalogImpl.DataType.INT)
+        ));
+        catalog.createTableWithTypes("C", Arrays.asList(
+                new CatalogImpl.ColumnInfo("bid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("x", CatalogImpl.DataType.INT)
+        ));
+        ASTNode.BinaryExpr on1 = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "aid"));
+        ASTNode.BinaryExpr on2 = new ASTNode.BinaryExpr(1, 60, "=",
+                new ASTNode.IdentifierExpr(1, 58, "bid"),
+                new ASTNode.IdentifierExpr(1, 65, "bid"));
+        ASTNode.SelectStmt.JoinClause join1 = new ASTNode.SelectStmt.JoinClause("B", on1);
+        ASTNode.SelectStmt.JoinClause join2 = new ASTNode.SelectStmt.JoinClause("C", on2);
+
+        // WHERE C.x > 5
+        ASTNode.BinaryExpr whereCond = new ASTNode.BinaryExpr(1, 80, ">",
+                new ASTNode.IdentifierExpr(1, 78, "x"),
+                lit(1, 85, "5", Kind.NUMBER));
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), whereCond,
+                List.of(join1, join2), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        PlanNode.JoinPlan jp = (PlanNode.JoinPlan) ((PlanNode.ProjectPlan) plan).getChild();
+        assertEquals(3, jp.getChildren().size());
+        // RBO: C (有谓词), B (连接 via bid=bid), student (连接 via id=aid)
+        assertEquals("C", getScanTableName(jp.getChildren().get(0)));
+        assertEquals("B", getScanTableName(jp.getChildren().get(1)));
+        assertEquals("student", getScanTableName(jp.getChildren().get(2)));
+        // C 有 Filter
+        assertInstanceOf(PlanNode.FilterPlan.class, jp.getChildren().get(0));
+    }
+
+    @Test
+    void rboJoinOrder_jsonSerialization_correctOnConditions() {
+        // 验证 RBO 重排后 JSON 序列化中 ON 条件正确
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        // WHERE cid > 100 → course 先
+        ASTNode.BinaryExpr whereCond = new ASTNode.BinaryExpr(1, 50, ">",
+                new ASTNode.IdentifierExpr(1, 48, "cid"),
+                lit(1, 55, "100", Kind.NUMBER));
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), whereCond,
+                List.of(join), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+        String json = generator.toJson(plan);
+
+        assertTrue(json.contains("\"op\":\"join\""));
+        assertTrue(json.contains("\"children\""));
+        assertTrue(json.contains("\"table\":\"course\""));
+        assertTrue(json.contains("\"table\":\"student\""));
+        assertTrue(json.contains("\"algorithms\""));
     }
 }
