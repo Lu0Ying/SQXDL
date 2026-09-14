@@ -1466,4 +1466,178 @@ class PlanGeneratorTest {
         assertTrue(json.contains("\"op\":\"scan\""));
         assertFalse(json.contains("\n"));
     }
+
+    // ========== NOT 一元表达式的 JSON 序列化 ==========
+
+    @Test
+    void toJson_notExpr_serializedAsUnary() {
+        // WHERE NOT (age > 18)
+        ASTNode.BinaryExpr inner = new ASTNode.BinaryExpr(1, 20, ">",
+                new ASTNode.IdentifierExpr(1, 18, "age"),
+                lit(1, 25, "18", Kind.NUMBER));
+        ASTNode.UnaryExpr notExpr = new ASTNode.UnaryExpr(1, 10, "NOT", inner);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), notExpr,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+        String json = generator.toJson(plan);
+
+        // 应包含 unary 节点，op 为 NOT，operand 为内层 binary
+        assertTrue(json.contains("\"type\":\"unary\""));
+        assertTrue(json.contains("\"op\":\"NOT\""));
+        assertTrue(json.contains("\"operand\":"));
+        assertTrue(json.contains("\"type\":\"binary\""));
+        assertTrue(json.contains("\"op\":\">\""));
+        assertTrue(json.contains("\"name\":\"age\""));
+        assertTrue(json.contains("\"value\":18"));
+    }
+
+    @Test
+    void toJson_nestedNotNotExpr_serializedCorrectly() {
+        // WHERE NOT NOT (age > 18) — 双重否定未化简时（操作数非常量）
+        ASTNode.BinaryExpr inner = new ASTNode.BinaryExpr(1, 20, ">",
+                new ASTNode.IdentifierExpr(1, 18, "age"),
+                lit(1, 25, "18", Kind.NUMBER));
+        ASTNode.UnaryExpr notInner = new ASTNode.UnaryExpr(1, 10, "NOT", inner);
+        ASTNode.UnaryExpr notNot = new ASTNode.UnaryExpr(1, 5, "NOT", notInner);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), notNot,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+        String json = generator.toJson(plan);
+
+        // 双重否定会被 optimizeExpr 消除为内层 age > 18，所以 JSON 中应只有 binary
+        assertTrue(json.contains("\"type\":\"binary\""));
+        assertTrue(json.contains("\"op\":\">\""));
+        // 不应出现 unary（已被消除）
+        assertFalse(json.contains("\"type\":\"unary\""));
+    }
+
+    // ========== NOT 一元表达式的常量折叠/化简 ==========
+
+    @Test
+    void optimize_notTrue_foldsToFalse() {
+        // WHERE NOT TRUE → FALSE → 保留 Filter(FALSE) 返回空集
+        ASTNode.LiteralExpr trueLit = new ASTNode.LiteralExpr(1, 10, "true", Kind.BOOLEAN);
+        ASTNode.UnaryExpr notTrue = new ASTNode.UnaryExpr(1, 5, "NOT", trueLit);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), notTrue,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        // Project → Filter(FALSE) → SeqScan
+        assertInstanceOf(PlanNode.ProjectPlan.class, plan);
+        PlanNode filter = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.FilterPlan.class, filter);
+        // Filter 条件应为 FALSE 字面量
+        ASTNode cond = ((PlanNode.FilterPlan) filter).getCondition();
+        assertInstanceOf(ASTNode.LiteralExpr.class, cond);
+        assertEquals("false", ((ASTNode.LiteralExpr) cond).getValue());
+        assertEquals(Kind.BOOLEAN, ((ASTNode.LiteralExpr) cond).getKind());
+    }
+
+    @Test
+    void optimize_notFalse_foldsToTrue_skipsFilter() {
+        // WHERE NOT FALSE → TRUE → 跳过 Filter
+        ASTNode.LiteralExpr falseLit = new ASTNode.LiteralExpr(1, 10, "false", Kind.BOOLEAN);
+        ASTNode.UnaryExpr notFalse = new ASTNode.UnaryExpr(1, 5, "NOT", falseLit);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), notFalse,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        // 恒真 → 跳过 Filter → Project 直接接 SeqScan
+        assertInstanceOf(PlanNode.ProjectPlan.class, plan);
+        PlanNode child = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.SeqScanPlan.class, child);
+    }
+
+    @Test
+    void optimize_notOfConstantComparison_foldsInnerFirst() {
+        // WHERE NOT (1 = 1) → NOT TRUE → FALSE
+        ASTNode.BinaryExpr inner = new ASTNode.BinaryExpr(1, 20, "=",
+                lit(1, 15, "1", Kind.NUMBER),
+                lit(1, 19, "1", Kind.NUMBER));
+        ASTNode.UnaryExpr notExpr = new ASTNode.UnaryExpr(1, 5, "NOT", inner);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), notExpr,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        // 应折叠为 FALSE → Filter(FALSE) → SeqScan
+        PlanNode filter = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.FilterPlan.class, filter);
+        ASTNode cond = ((PlanNode.FilterPlan) filter).getCondition();
+        assertInstanceOf(ASTNode.LiteralExpr.class, cond);
+        assertEquals("false", ((ASTNode.LiteralExpr) cond).getValue());
+    }
+
+    @Test
+    void optimize_notOfArithmeticComparison_foldsInnerArithmetic() {
+        // WHERE NOT (1+2 > 3) → NOT (3 > 3) → NOT FALSE → TRUE → 跳过 Filter
+        ASTNode.BinaryExpr add = new ASTNode.BinaryExpr(1, 15, "+",
+                lit(1, 10, "1", Kind.NUMBER),
+                lit(1, 12, "2", Kind.NUMBER));
+        ASTNode.BinaryExpr cmp = new ASTNode.BinaryExpr(1, 20, ">",
+                add, lit(1, 18, "3", Kind.NUMBER));
+        ASTNode.UnaryExpr notExpr = new ASTNode.UnaryExpr(1, 5, "NOT", cmp);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), notExpr,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        // 1+2=3, 3>3 为 FALSE, NOT FALSE 为 TRUE → 跳过 Filter
+        PlanNode child = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.SeqScanPlan.class, child);
+    }
+
+    @Test
+    void optimize_notNotColumnExpr_eliminatedToInner() {
+        // WHERE NOT NOT (age > 18) → age > 18（消除双重否定）
+        ASTNode.BinaryExpr inner = new ASTNode.BinaryExpr(1, 20, ">",
+                new ASTNode.IdentifierExpr(1, 18, "age"),
+                lit(1, 25, "18", Kind.NUMBER));
+        ASTNode.UnaryExpr notInner = new ASTNode.UnaryExpr(1, 10, "NOT", inner);
+        ASTNode.UnaryExpr notNot = new ASTNode.UnaryExpr(1, 5, "NOT", notInner);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), notNot,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        // 双重否定消除 → 留下 age > 18 的 Filter
+        PlanNode filter = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.FilterPlan.class, filter);
+        ASTNode cond = ((PlanNode.FilterPlan) filter).getCondition();
+        // 应是 BinaryExpr（age > 18），不是 UnaryExpr
+        assertInstanceOf(ASTNode.BinaryExpr.class, cond);
+        assertEquals(">", ((ASTNode.BinaryExpr) cond).getOp());
+    }
+
+    @Test
+    void optimize_notOfColumnExpr_keptAsUnary() {
+        // WHERE NOT (age > 18) — 操作数非常量，保留 UnaryExpr
+        ASTNode.BinaryExpr inner = new ASTNode.BinaryExpr(1, 20, ">",
+                new ASTNode.IdentifierExpr(1, 18, "age"),
+                lit(1, 25, "18", Kind.NUMBER));
+        ASTNode.UnaryExpr notExpr = new ASTNode.UnaryExpr(1, 5, "NOT", inner);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), notExpr,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        // 保留为 NOT (age > 18) 的 Filter
+        PlanNode filter = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.FilterPlan.class, filter);
+        ASTNode cond = ((PlanNode.FilterPlan) filter).getCondition();
+        assertInstanceOf(ASTNode.UnaryExpr.class, cond);
+        assertEquals("NOT", ((ASTNode.UnaryExpr) cond).getOp());
+    }
 }

@@ -269,6 +269,31 @@ public class PlanGenerator {
         if (expr instanceof LiteralExpr || expr instanceof ASTNode.IdentifierExpr) {
             return expr;
         }
+        if (expr instanceof ASTNode.UnaryExpr un) {
+            // 1. 递归优化操作数（先折叠内部的常量运算，如 NOT (1+2>3) 内的 1+2）
+            ASTNode operand = optimizeExpr(un.getOperand());
+            String op = un.getOp();
+
+            // 2. 常量折叠：NOT TRUE → FALSE, NOT FALSE → TRUE
+            if (op.equals("NOT") && operand instanceof LiteralExpr lit
+                    && lit.getKind() == Kind.BOOLEAN) {
+                boolean val = Boolean.parseBoolean(lit.getValue());
+                return new LiteralExpr(un.getLine(), un.getCol(),
+                        String.valueOf(!val), Kind.BOOLEAN);
+            }
+
+            // 3. 双重否定消除：NOT NOT x → x
+            if (op.equals("NOT") && operand instanceof ASTNode.UnaryExpr inner
+                    && inner.getOp().equals("NOT")) {
+                return inner.getOperand();
+            }
+
+            // 4. 无变化 → 返回原节点，避免创建多余对象
+            if (operand == un.getOperand()) {
+                return un;
+            }
+            return new ASTNode.UnaryExpr(un.getLine(), un.getCol(), op, operand);
+        }
         if (!(expr instanceof ASTNode.BinaryExpr bin)) {
             return expr;
         }
@@ -633,6 +658,11 @@ public class PlanGenerator {
             writeExpr(sb, bin.getLeft());
             sb.append(",\"right\":");
             writeExpr(sb, bin.getRight());
+        } else if (expr instanceof ASTNode.UnaryExpr un) {
+            sb.append("\"type\":\"unary\",\"op\":");
+            writeJsonString(sb, un.getOp());
+            sb.append(",\"operand\":");
+            writeExpr(sb, un.getOperand());
         } else {
             throw new IllegalArgumentException("无法序列化的表达式类型: " + expr.getClass().getSimpleName());
         }
