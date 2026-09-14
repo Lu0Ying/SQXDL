@@ -33,3 +33,6 @@ desktop.ini
 *.tmp
 *.bak
 hs_err_pid*
+
+# ===== jqwik 属性测试的失败种子缓存（FuzzTest 运行时生成的文件） =====
+.jqwik-database
