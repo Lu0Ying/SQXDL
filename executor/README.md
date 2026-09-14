@@ -27,6 +27,7 @@ executor/
     │   ├── Main.java                          # CLI 入口（REPL）
     │   ├── Executor.java                      # 计划执行 + 结果输出
     │   ├── SqlEngine.java                     # CLI/GUI 共用执行引擎
+    │   ├── CommandHistory.java                # 输入历史（GUI ↑↓ / CLI 管道模式 !N）
     │   └── storage/
     │       ├── StorageClient.java             # 存储核心服务式会话客户端
     │       ├── StorageTableMetadataProvider.java # 方案 B 桥接：目录同步
@@ -64,12 +65,18 @@ SwingDemo (GUI) ─────────┘                     │
 ### 入口层
 
 - **Main.java** — CLI 交互终端（REPL）。`sqxdl>` 提示符循环读入 SQL，`exit` 退出。
-  每轮 SQL 包在 try-catch 中，出错只打印错误并继续循环；`hasNextLine()` 先探测输入流
-  结束（Ctrl+Z/Ctrl+D）避免异常。执行统一委托 `SqlEngine`（AUTO 模式），存储核心
-  不可用时打印回退提示，REPL 永不崩溃。
+  输入按 TTY 自动分路径（共用同一条 `processInput` 处理逻辑）：
+  **真终端**走 JLine —— ↑↓ 翻历史、Ctrl+R 搜索、行内编辑；**管道/重定向**回退
+  Scanner —— 用 `history` / `!N` / `!!` 元命令等效替代。每轮 SQL 包在 try-catch 中，
+  出错只打印错误并继续循环，REPL 永不崩溃。退出前（finally）调用 `engine.close()`
+  让存储核心落盘。
+- **CommandHistory.java** — CLI 与 GUI 共用的输入历史：连续重复去重、
+  `!N`/`!!` 解析、带编号清单输出（GUI ↑↓ 翻阅与 CLI 管道模式都依赖它）。
 - **SwingDemo.java** — 图形界面。顶部连接/断开按钮，左侧表列表 + 右侧数据表格，底部
   SQL 输入区 + 日志区。所有执行委托 `SqlEngine`（AUTO 模式，数据持久化），回车直接
-  执行（Shift+Enter 换行），与 CLI 体验一致。CREATE TABLE 成功后左侧表列表实时刷新；
+  执行（Shift+Enter 换行），与 CLI 体验一致。输入框 ↑/↓ 翻阅输入历史（光标在
+  首行/末行时触发，翻回最新位置恢复未执行的草稿，多行编辑不受影响）。
+  CREATE TABLE 成功后左侧表列表实时刷新；
   断开连接与窗口关闭都会以协议 exit 结束存储服务（数据落盘）；左侧列表在启动时从
   存储核心同步真实表清单。
 
@@ -125,6 +132,10 @@ SELECT * FROM student WHERE NOT age > 20 AND id < 5       -- 逻辑组合（&&/|
 SELECT * FROM student WHERE gpa + 1 > 90                  -- 条件内算术*
 UPDATE student SET gpa = 95.0 WHERE id = 1                -- 更新（可省 WHERE，SET 值须为常量）
 DELETE FROM student WHERE id = 2                          -- 删除（可省 WHERE）
+SELECT name, gpa FROM student WHERE gpa > 90 ORDER BY gpa DESC   -- 排序（多键可逗号续写）
+SELECT grade, COUNT(*) FROM student GROUP BY grade        -- 分组计数（每组输出一行）
+SELECT COUNT(*) FROM student                              -- 全表计数（无 GROUP BY）
+SELECT name, title FROM student JOIN course ON id = cid   -- 内连接（可链式多表）
 SHOW TABLES                                              -- 列出全部表
 SHOW TABLE student                                       -- 查看表结构（列名 + 类型）
 DROP TABLE student                                       -- 删表（同时清理目录与数据）
@@ -163,17 +174,19 @@ DROP TABLE student                                       -- 删表（同时清�
 在项目根目录：
 
 ```bash
-mvn -pl executor -am package    # 编译 executor 及其依赖模块
+mvn -pl executor -am package    # 编译 executor 及其依赖模块（自动下载 JLine 依赖）
 
-# CLI 交互终端（AUTO 模式，真实存储核心）
-java -cp "executor/target/classes;semantic/target/classes;parser/target/classes" com.sqxdl.executor.Main
+# CLI 交互终端（AUTO 模式，真实存储核心；真终端下支持 ↑↓ 历史）
+mvn -pl executor exec:java -Dexec.mainClass=com.sqxdl.executor.Main
 
 # Swing 图形界面（AUTO 模式，数据持久化于存储核心）
-java -cp "executor/target/classes;semantic/target/classes;parser/target/classes" com.sqxdl.swing.SwingDemo
+mvn -pl executor exec:java -Dexec.mainClass=com.sqxdl.swing.SwingDemo
 ```
 
 Windows 分隔符为 `;`，Linux/macOS 为 `:`。也可直接在 IDEA 中运行
-`Main.main()` / `SwingDemo.main()`。需要指定存储核心位置时加
+`Main.main()` / `SwingDemo.main()`（依赖由 Maven 自动解析）。若不经 Maven、
+用 `javac/java` 直接编译运行 CLI，需把 JLine 三个 jar
+（`jline`、`jline-terminal-jna`、`jna`）加入 `-cp`。需要指定存储核心位置时加
 `-Dsqxdl.storage.exe=<exe 绝对路径>`。
 
 ---

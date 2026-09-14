@@ -4,6 +4,7 @@ import com.sqxdl.parser.ASTNode;
 
 import java.util.List;
 import java.util.Map;
+import java.util.ArrayList;
 
 /**
  * 逻辑执行计划节点基类，是语义分析/优化器与执行器之间的接口契约。
@@ -283,6 +284,122 @@ public abstract class PlanNode {
         }
     }
 
+    /**
+     * 连接计划：对多个子计划做笛卡尔积后按 onConditions 过滤。
+     * 对应 SQL 的 JOIN ... ON 子句。支持多表连接。
+     * 左表为 child（第一个子节点），右表通过 children 列表追加。
+     * onConditions 与 children 一一对应：children[i] 的连接条件为 onConditions[i]。
+     * 左表（第一个子节点）的 onCondition 约定为 null。
+     */
+    public static class JoinPlan extends PlanNode {
+
+        private final List<PlanNode> children;
+        private final List<ASTNode> onConditions;
+
+        public JoinPlan(List<PlanNode> children, List<ASTNode> onConditions) {
+            this.children = children;
+            this.onConditions = onConditions;
+        }
+
+        public List<PlanNode> getChildren() {
+            return children;
+        }
+
+        public List<ASTNode> getOnConditions() {
+            return onConditions;
+        }
+
+        /** 兼容单 child 访问：返回第一个子节点 */
+        public PlanNode getChild() {
+            return children.isEmpty() ? null : children.get(0);
+        }
+
+        @Override
+        public String toString() {
+            return "Join{tables=" + children.size() + "}";
+        }
+    }
+
+    /**
+     * 分组计划：按 groupBy 列对 child 输出做分组。
+     * 对应 SQL 的 GROUP BY 子句。无聚合函数时仅做去重分组。
+     */
+    public static class GroupByPlan extends PlanNode {
+
+        private final List<String> groupByColumns;
+        private final PlanNode child;
+
+        public GroupByPlan(List<String> groupByColumns, PlanNode child) {
+            this.groupByColumns = groupByColumns;
+            this.child = child;
+        }
+
+        public List<String> getGroupByColumns() {
+            return groupByColumns;
+        }
+
+        public PlanNode getChild() {
+            return child;
+        }
+
+        @Override
+        public String toString() {
+            return "GroupBy{columns=" + groupByColumns + ", child=" + child + "}";
+        }
+    }
+
+    /**
+     * 排序计划：按 orderBy 指定的列和方向对 child 输出做排序。
+     * 对应 SQL 的 ORDER BY 子句。每个 OrderItem 含列名与方向（ASC/DESC）。
+     */
+    public static class OrderByPlan extends PlanNode {
+
+        /** 排序项：列名 + 方向 */
+        public static class OrderItem {
+            private final String column;
+            private final String direction;
+
+            public OrderItem(String column, String direction) {
+                this.column = column;
+                this.direction = direction;
+            }
+
+            public String getColumn() {
+                return column;
+            }
+
+            public String getDirection() {
+                return direction;
+            }
+
+            @Override
+            public String toString() {
+                return column + " " + direction;
+            }
+        }
+
+        private final List<OrderItem> orderByItems;
+        private final PlanNode child;
+
+        public OrderByPlan(List<OrderItem> orderByItems, PlanNode child) {
+            this.orderByItems = orderByItems;
+            this.child = child;
+        }
+
+        public List<OrderItem> getOrderByItems() {
+            return orderByItems;
+        }
+
+        public PlanNode getChild() {
+            return child;
+        }
+
+        @Override
+        public String toString() {
+            return "OrderBy{items=" + orderByItems + ", child=" + child + "}";
+        }
+    }
+
     // ========== 计划树可视化/调试输出 ==========
 
     /**
@@ -335,6 +452,15 @@ public abstract class PlanNode {
             formatPlan(sb, p.getChild(), depth + 1, true);
         } else if (node instanceof ProjectPlan p) {
             formatPlan(sb, p.getChild(), depth + 1, true);
+        } else if (node instanceof GroupByPlan p) {
+            formatPlan(sb, p.getChild(), depth + 1, true);
+        } else if (node instanceof OrderByPlan p) {
+            formatPlan(sb, p.getChild(), depth + 1, true);
+        } else if (node instanceof JoinPlan p) {
+            List<PlanNode> children = p.getChildren();
+            for (int i = 0; i < children.size(); i++) {
+                formatPlan(sb, children.get(i), depth + 1, i == children.size() - 1);
+            }
         }
     }
 
@@ -364,8 +490,22 @@ public abstract class PlanNode {
             detailLine(sb, depth, "columns", p.getColumns());
         } else if (node instanceof ShowTablesPlan) {
             // 无属性
+        } else if (node instanceof DescribeTablePlan p) {
+            detailLine(sb, depth, "table", p.getTableName());
         } else if (node instanceof DropTablePlan p) {
             detailLine(sb, depth, "table", p.getTableName());
+        } else if (node instanceof JoinPlan p) {
+            // ON 条件列表：on[i] 为 null 表示该子节点为左表
+            List<ASTNode> onList = p.getOnConditions();
+            List<String> onStrs = new ArrayList<>();
+            for (ASTNode on : onList) {
+                onStrs.add(on == null ? "(左表)" : formatExpr(on));
+            }
+            detailLine(sb, depth, "on", onStrs);
+        } else if (node instanceof GroupByPlan p) {
+            detailLine(sb, depth, "columns", p.getGroupByColumns());
+        } else if (node instanceof OrderByPlan p) {
+            detailLine(sb, depth, "items", p.getOrderByItems());
         }
     }
 
@@ -392,7 +532,11 @@ public abstract class PlanNode {
         if (node instanceof DeletePlan) return "DeletePlan";
         if (node instanceof CreateTablePlan) return "CreateTablePlan";
         if (node instanceof ShowTablesPlan) return "ShowTablesPlan";
+        if (node instanceof DescribeTablePlan) return "DescribeTablePlan";
         if (node instanceof DropTablePlan) return "DropTablePlan";
+        if (node instanceof JoinPlan) return "JoinPlan";
+        if (node instanceof GroupByPlan) return "GroupByPlan";
+        if (node instanceof OrderByPlan) return "OrderByPlan";
         return node.getClass().getSimpleName();
     }
 

@@ -98,17 +98,55 @@ public class PlanGenerator {
     // ========== SELECT 计划生成 ==========
 
     /**
-     * 生成查询计划树：Project -> Filter(可选) -> SeqScan。
+     * 生成查询计划树：
+     *   Project → OrderBy(可选) → GroupBy(可选) → Filter(可选) → Join/SeqScan
      * WHERE 条件经过优化后，恒真则跳过 Filter。
+     * 多表查询时底层为 JoinPlan（连接多个 SeqScan），单表时为 SeqScan。
      */
     private PlanNode generateSelect(ASTNode.SelectStmt stmt) {
-        PlanNode plan = new PlanNode.SeqScanPlan(stmt.getTableName());
+        // 1. 构建数据源：单表 → SeqScan；多表 → JoinPlan
+        PlanNode plan;
+        List<ASTNode.SelectStmt.JoinClause> joins = stmt.getJoins();
+        if (joins.isEmpty()) {
+            // 单表查询
+            plan = new PlanNode.SeqScanPlan(stmt.getTableName());
+        } else {
+            // 多表 JOIN：收集所有子扫描和 ON 条件
+            List<PlanNode> children = new ArrayList<>();
+            List<ASTNode> onConditions = new ArrayList<>();
+            // 主表作为第一个子节点，其 onCondition 约定为 null
+            children.add(new PlanNode.SeqScanPlan(stmt.getTableName()));
+            onConditions.add(null);
+            // 各 JOIN 表依次加入
+            for (ASTNode.SelectStmt.JoinClause join : joins) {
+                children.add(new PlanNode.SeqScanPlan(join.getTableName()));
+                onConditions.add(optimizeCondition(join.getOnCond()));
+            }
+            plan = new PlanNode.JoinPlan(children, onConditions);
+        }
 
+        // 2. 叠加 WHERE 过滤（可选）
         ASTNode whereCond = optimizeCondition(stmt.getWhereCond());
         if (whereCond != null) {
             plan = new PlanNode.FilterPlan(whereCond, plan);
         }
 
+        // 3. 叠加 GROUP BY（可选）：显式 GROUP BY，或投影含聚合（如 COUNT(*)）时
+        //    补一个空分组键的 GroupBy 计划（全表一组），由执行层计算聚合值
+        if (!stmt.getGroupBy().isEmpty() || hasAggregate(stmt)) {
+            plan = new PlanNode.GroupByPlan(new ArrayList<>(stmt.getGroupBy()), plan);
+        }
+
+        // 4. 叠加 ORDER BY（可选）
+        if (!stmt.getOrderBy().isEmpty()) {
+            List<PlanNode.OrderByPlan.OrderItem> items = new ArrayList<>();
+            for (ASTNode.SelectStmt.OrderItem item : stmt.getOrderBy()) {
+                items.add(new PlanNode.OrderByPlan.OrderItem(item.getColumn(), item.getDirection()));
+            }
+            plan = new PlanNode.OrderByPlan(items, plan);
+        }
+
+        // 5. 叠加投影
         return new PlanNode.ProjectPlan(expandColumns(stmt), plan);
     }
 
@@ -131,6 +169,16 @@ public class PlanGenerator {
         }
         List<String> allColumns = catalog.getColumns(stmt.getTableName());
         return allColumns == null ? new ArrayList<>() : allColumns;
+    }
+
+    /** 投影清单是否含聚合项（如 COUNT(*)）；SELECT * 展开结果不含聚合 */
+    private boolean hasAggregate(ASTNode.SelectStmt stmt) {
+        for (String column : stmt.getSelectList()) {
+            if ("COUNT(*)".equalsIgnoreCase(column)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ========== 条件优化入口 ==========
@@ -160,6 +208,31 @@ public class PlanGenerator {
     private ASTNode optimizeExpr(ASTNode expr) {
         if (expr instanceof LiteralExpr || expr instanceof ASTNode.IdentifierExpr) {
             return expr;
+        }
+        if (expr instanceof ASTNode.UnaryExpr un) {
+            // 1. 递归优化操作数（先折叠内部的常量运算，如 NOT (1+2>3) 内的 1+2）
+            ASTNode operand = optimizeExpr(un.getOperand());
+            String op = un.getOp();
+
+            // 2. 常量折叠：NOT TRUE → FALSE, NOT FALSE → TRUE
+            if (op.equals("NOT") && operand instanceof LiteralExpr lit
+                    && lit.getKind() == Kind.BOOLEAN) {
+                boolean val = Boolean.parseBoolean(lit.getValue());
+                return new LiteralExpr(un.getLine(), un.getCol(),
+                        String.valueOf(!val), Kind.BOOLEAN);
+            }
+
+            // 3. 双重否定消除：NOT NOT x → x
+            if (op.equals("NOT") && operand instanceof ASTNode.UnaryExpr inner
+                    && inner.getOp().equals("NOT")) {
+                return inner.getOperand();
+            }
+
+            // 4. 无变化 → 返回原节点，避免创建多余对象
+            if (operand == un.getOperand()) {
+                return un;
+            }
+            return new ASTNode.UnaryExpr(un.getLine(), un.getCol(), op, operand);
         }
         if (!(expr instanceof ASTNode.BinaryExpr bin)) {
             return expr;
@@ -459,6 +532,44 @@ public class PlanGenerator {
         } else if (plan instanceof PlanNode.DropTablePlan p) {
             sb.append("\"op\":\"dropTable\",\"table\":");
             writeJsonString(sb, p.getTableName());
+        } else if (plan instanceof PlanNode.JoinPlan p) {
+            // JOIN：{"op":"join","children":[子节点...],"on":[条件...]}
+            // on[i] 为 null 表示该子节点为左表，无 ON 条件
+            sb.append("\"op\":\"join\",\"children\":[");
+            for (int i = 0; i < p.getChildren().size(); i++) {
+                if (i > 0) sb.append(",");
+                writePlanNode(sb, p.getChildren().get(i));
+            }
+            sb.append("],\"on\":[");
+            for (int i = 0; i < p.getOnConditions().size(); i++) {
+                if (i > 0) sb.append(",");
+                ASTNode on = p.getOnConditions().get(i);
+                if (on == null) {
+                    sb.append("null");
+                } else {
+                    writeExpr(sb, on);
+                }
+            }
+            sb.append("]");
+        } else if (plan instanceof PlanNode.GroupByPlan p) {
+            sb.append("\"op\":\"groupBy\",\"columns\":");
+            writeStringList(sb, p.getGroupByColumns());
+            sb.append(",\"child\":");
+            writePlanNode(sb, p.getChild());
+        } else if (plan instanceof PlanNode.OrderByPlan p) {
+            // ORDER BY：{"op":"orderBy","items":[{"column":"age","direction":"ASC"},...],"child":{...}}
+            sb.append("\"op\":\"orderBy\",\"items\":[");
+            for (int i = 0; i < p.getOrderByItems().size(); i++) {
+                PlanNode.OrderByPlan.OrderItem item = p.getOrderByItems().get(i);
+                if (i > 0) sb.append(",");
+                sb.append("{\"column\":");
+                writeJsonString(sb, item.getColumn());
+                sb.append(",\"direction\":");
+                writeJsonString(sb, item.getDirection());
+                sb.append("}");
+            }
+            sb.append("],\"child\":");
+            writePlanNode(sb, p.getChild());
         } else {
             throw new IllegalArgumentException("无法序列化的计划节点类型: " + plan.getClass().getSimpleName());
         }
@@ -487,6 +598,11 @@ public class PlanGenerator {
             writeExpr(sb, bin.getLeft());
             sb.append(",\"right\":");
             writeExpr(sb, bin.getRight());
+        } else if (expr instanceof ASTNode.UnaryExpr un) {
+            sb.append("\"type\":\"unary\",\"op\":");
+            writeJsonString(sb, un.getOp());
+            sb.append(",\"operand\":");
+            writeExpr(sb, un.getOperand());
         } else {
             throw new IllegalArgumentException("无法序列化的表达式类型: " + expr.getClass().getSimpleName());
         }

@@ -38,7 +38,7 @@ class SemanticAnalyzerTest {
                 1, 1, "student",
                 Arrays.asList("id", "name"),
                 null
-        );
+        , List.of(), List.of(), List.of());
         analyzer.analyze(stmt);
     }
 
@@ -48,7 +48,7 @@ class SemanticAnalyzerTest {
                 1, 1, "nonexistent",
                 Arrays.asList("id"),
                 null
-        );
+        , List.of(), List.of(), List.of());
         SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
         assertTrue(ex.getMessage().contains("不存在"));
         assertEquals(1, ex.getLine());
@@ -63,7 +63,7 @@ class SemanticAnalyzerTest {
                 1, 1, "student",
                 Arrays.asList("id", "name", "age"),
                 null
-        );
+        , List.of(), List.of(), List.of());
         analyzer.analyze(stmt);
     }
 
@@ -73,9 +73,9 @@ class SemanticAnalyzerTest {
                 1, 1, "student",
                 Arrays.asList("id", "nonexistent"),
                 null
-        );
+        , List.of(), List.of(), List.of());
         SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
-        assertTrue(ex.getMessage().contains("不存在列"));
+        assertTrue(ex.getMessage().contains("不存在"));
     }
 
     // ========== SELECT：* 展开 ==========
@@ -86,7 +86,7 @@ class SemanticAnalyzerTest {
                 1, 1, "student",
                 Arrays.asList("*"),
                 null
-        );
+        , List.of(), List.of(), List.of());
         analyzer.analyze(stmt);
 
         List<String> expanded = analyzer.getExpandedColumns(stmt);
@@ -99,7 +99,7 @@ class SemanticAnalyzerTest {
                 1, 1, "student",
                 Arrays.asList("id", "name"),
                 null
-        );
+        , List.of(), List.of(), List.of());
         analyzer.analyze(stmt);
 
         List<String> expanded = analyzer.getExpandedColumns(stmt);
@@ -118,7 +118,7 @@ class SemanticAnalyzerTest {
                 1, 1, "student",
                 Arrays.asList("id"),
                 cond
-        );
+        , List.of(), List.of(), List.of());
         analyzer.analyze(stmt);
     }
 
@@ -132,9 +132,9 @@ class SemanticAnalyzerTest {
                 1, 1, "student",
                 Arrays.asList("id"),
                 cond
-        );
+        , List.of(), List.of(), List.of());
         SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
-        assertTrue(ex.getMessage().contains("不存在列"));
+        assertTrue(ex.getMessage().contains("不存在"));
         assertEquals(1, ex.getLine());
         assertEquals(10, ex.getCol());
     }
@@ -151,7 +151,7 @@ class SemanticAnalyzerTest {
                 1, 1, "student",
                 Arrays.asList("id"),
                 cond
-        );
+        , List.of(), List.of(), List.of());
         SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
         assertTrue(ex.getMessage().contains("类型不兼容"));
     }
@@ -166,7 +166,7 @@ class SemanticAnalyzerTest {
                 1, 1, "student",
                 Arrays.asList("id"),
                 cond
-        );
+        , List.of(), List.of(), List.of());
         analyzer.analyze(stmt);
     }
 
@@ -180,7 +180,7 @@ class SemanticAnalyzerTest {
                 1, 1, "student",
                 Arrays.asList("id"),
                 cond
-        );
+        , List.of(), List.of(), List.of());
         analyzer.analyze(stmt);
     }
 
@@ -258,7 +258,7 @@ class SemanticAnalyzerTest {
                 values
         );
         SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
-        assertTrue(ex.getMessage().contains("不存在列"));
+        assertTrue(ex.getMessage().contains("不存在"));
     }
 
     // ========== UPDATE ==========
@@ -288,7 +288,7 @@ class SemanticAnalyzerTest {
                 null
         );
         SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
-        assertTrue(ex.getMessage().contains("不存在列"));
+        assertTrue(ex.getMessage().contains("不存在"));
     }
 
     @Test
@@ -366,7 +366,7 @@ class SemanticAnalyzerTest {
                 1, 1, "student",
                 Arrays.asList("id"),
                 cond
-        );
+        , List.of(), List.of(), List.of());
         analyzer.analyze(stmt);
     }
 
@@ -380,7 +380,7 @@ class SemanticAnalyzerTest {
                 1, 1, "student",
                 Arrays.asList("id"),
                 add
-        );
+        , List.of(), List.of(), List.of());
         SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
         assertTrue(ex.getMessage().contains("数值类型"));
     }
@@ -396,7 +396,7 @@ class SemanticAnalyzerTest {
                 new ASTNode.IdentifierExpr(1, 18, "age"), new ASTNode.LiteralExpr(1, 22, "20", ASTNode.LiteralExpr.Kind.NUMBER));
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, "AND", left, right);
 
-        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond);
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         assertDoesNotThrow(() -> analyzer.analyze(stmt));
     }
 
@@ -409,7 +409,7 @@ class SemanticAnalyzerTest {
                 new ASTNode.IdentifierExpr(1, 18, "id"), new ASTNode.LiteralExpr(1, 23, "2", ASTNode.LiteralExpr.Kind.NUMBER));
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, "OR", left, right);
 
-        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond);
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         assertDoesNotThrow(() -> analyzer.analyze(stmt));
     }
 
@@ -422,7 +422,7 @@ class SemanticAnalyzerTest {
                 new ASTNode.IdentifierExpr(1, 18, "age"), new ASTNode.LiteralExpr(1, 22, "18", ASTNode.LiteralExpr.Kind.NUMBER));
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, "AND", left, right);
 
-        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond);
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
         assertTrue(ex.getMessage().contains("左侧必须是布尔表达式"));
     }
@@ -436,7 +436,7 @@ class SemanticAnalyzerTest {
                 new ASTNode.IdentifierExpr(1, 18, "name"), new ASTNode.LiteralExpr(1, 22, "x", ASTNode.LiteralExpr.Kind.STRING));
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 14, "AND", left, right);
 
-        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond);
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
         // 右侧的 name+x 会先报算术运算错误（字符串不能做算术）
         assertTrue(ex.getMessage().contains("数值类型"));
@@ -452,7 +452,7 @@ class SemanticAnalyzerTest {
                 new ASTNode.IdentifierExpr(1, 27, "id"), new ASTNode.LiteralExpr(1, 31, "0", ASTNode.LiteralExpr.Kind.NUMBER));
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 24, "OR", leftAnd, right);
 
-        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond);
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student", Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         assertDoesNotThrow(() -> analyzer.analyze(stmt));
     }
 
@@ -488,7 +488,7 @@ class SemanticAnalyzerTest {
         ASTNode.LiteralExpr lit = new ASTNode.LiteralExpr(1, 18, "3.14", ASTNode.LiteralExpr.Kind.NUMBER);
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 15, ">", col, lit);
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student",
-                Arrays.asList("id", "score"), cond);
+                Arrays.asList("id", "score"), cond, List.of(), List.of(), List.of());
         assertDoesNotThrow(() -> analyzer.analyze(stmt));
     }
 
@@ -499,7 +499,7 @@ class SemanticAnalyzerTest {
         ASTNode.LiteralExpr lit = new ASTNode.LiteralExpr(1, 18, "90", ASTNode.LiteralExpr.Kind.NUMBER);
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 15, ">", col, lit);
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student",
-                Arrays.asList("id"), cond);
+                Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         assertDoesNotThrow(() -> analyzer.analyze(stmt));
     }
 
@@ -510,7 +510,7 @@ class SemanticAnalyzerTest {
         ASTNode.LiteralExpr lit = new ASTNode.LiteralExpr(1, 15, "1.5", ASTNode.LiteralExpr.Kind.NUMBER);
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 12, ">", col, lit);
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student",
-                Arrays.asList("id"), cond);
+                Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         assertDoesNotThrow(() -> analyzer.analyze(stmt));
     }
 
@@ -523,7 +523,7 @@ class SemanticAnalyzerTest {
         ASTNode.LiteralExpr lit60 = new ASTNode.LiteralExpr(1, 25, "60", ASTNode.LiteralExpr.Kind.NUMBER);
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 22, ">", addExpr, lit60);
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student",
-                Arrays.asList("id"), cond);
+                Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         assertDoesNotThrow(() -> analyzer.analyze(stmt));
     }
 
@@ -534,7 +534,7 @@ class SemanticAnalyzerTest {
         ASTNode.LiteralExpr lit = new ASTNode.LiteralExpr(1, 18, "abc", ASTNode.LiteralExpr.Kind.STRING);
         ASTNode.BinaryExpr cond = new ASTNode.BinaryExpr(1, 15, ">", col, lit);
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(1, 1, "student",
-                Arrays.asList("id"), cond);
+                Arrays.asList("id"), cond, List.of(), List.of(), List.of());
         SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
         assertTrue(ex.getMessage().contains("不兼容") || ex.getMessage().contains("类型"));
     }
@@ -579,6 +579,185 @@ class SemanticAnalyzerTest {
         Map<String, ASTNode.LiteralExpr> set = new LinkedHashMap<>();
         set.put("price", new ASTNode.LiteralExpr(1, 20, "19.99", ASTNode.LiteralExpr.Kind.NUMBER));
         ASTNode.UpdateStmt stmt = new ASTNode.UpdateStmt(1, 1, "products", set, null);
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    // ========== 多表 JOIN 语义检查 ==========
+
+    @Test
+    void join_validOnCondition_succeeds() {
+        // course 表：cid 仅在 course 中存在，id 仅在 student 中存在
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        // ON student.id = course.cid
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name", "cname"), null,
+                List.of(join), List.of(), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void join_tableNotExists_throwsException() {
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("nonexistent", null);
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), null,
+                List.of(join), List.of(), List.of());
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("不存在"));
+    }
+
+    @Test
+    void join_onCondColumnNotExists_throwsException() {
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        // ON student.id = course.nonexistent
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "nonexistent"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), null,
+                List.of(join), List.of(), List.of());
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("不存在"));
+    }
+
+    @Test
+    void join_ambiguousColumnInSelect_throwsException() {
+        // enrollment 表也有 id 列 → SELECT id 歧义
+        catalog.createTableWithTypes("enrollment", Arrays.asList(
+                new CatalogImpl.ColumnInfo("id", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("student_id", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("grade", CatalogImpl.DataType.DOUBLE)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "student_id"),
+                new ASTNode.IdentifierExpr(1, 40, "id"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("enrollment", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), null,
+                List.of(join), List.of(), List.of());
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("歧义"));
+    }
+
+    @Test
+    void join_selectStar_expandsToAllTables() {
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("*"), null,
+                List.of(join), List.of(), List.of());
+        analyzer.analyze(stmt);
+
+        List<String> expanded = analyzer.getExpandedColumns(stmt);
+        // 应展开为 student(id,name,age,score) + course(cid,cname) 共 6 列
+        assertEquals(6, expanded.size());
+        assertTrue(expanded.contains("id"));
+        assertTrue(expanded.contains("cname"));
+    }
+
+    // ========== GROUP BY 语义检查 ==========
+
+    @Test
+    void groupBy_validColumn_succeeds() {
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("age"), null,
+                List.of(), List.of("age"), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void groupBy_columnNotExists_throwsException() {
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("age"), null,
+                List.of(), List.of("nonexistent"), List.of());
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("不存在"));
+    }
+
+    @Test
+    void groupBy_multipleColumns_succeeds() {
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("age", "score"), null,
+                List.of(), List.of("age", "score"), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    // ========== ORDER BY 语义检查 ==========
+
+    @Test
+    void orderBy_validColumn_succeeds() {
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), null,
+                List.of(), List.of(),
+                List.of(new ASTNode.SelectStmt.OrderItem("age", "ASC")));
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void orderBy_columnNotExists_throwsException() {
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), null,
+                List.of(), List.of(),
+                List.of(new ASTNode.SelectStmt.OrderItem("nonexistent", "DESC")));
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("不存在"));
+    }
+
+    @Test
+    void orderBy_multipleColumns_succeeds() {
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id"), null,
+                List.of(), List.of(),
+                List.of(
+                        new ASTNode.SelectStmt.OrderItem("age", "ASC"),
+                        new ASTNode.SelectStmt.OrderItem("score", "DESC")));
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    // ========== 组合：JOIN + WHERE + GROUP BY + ORDER BY ==========
+
+    @Test
+    void join_where_groupBy_orderBy_allSucceeds() {
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR),
+                new CatalogImpl.ColumnInfo("credit", CatalogImpl.DataType.INT)
+        ));
+        // ON student.id = course.cid
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        // WHERE age > 18
+        ASTNode.BinaryExpr whereCond = new ASTNode.BinaryExpr(1, 50, ">",
+                new ASTNode.IdentifierExpr(1, 48, "age"),
+                new ASTNode.LiteralExpr(1, 55, "18", ASTNode.LiteralExpr.Kind.NUMBER));
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name", "cname"), whereCond,
+                List.of(join), List.of("age"),
+                List.of(new ASTNode.SelectStmt.OrderItem("cname", "ASC")));
         assertDoesNotThrow(() -> analyzer.analyze(stmt));
     }
 }

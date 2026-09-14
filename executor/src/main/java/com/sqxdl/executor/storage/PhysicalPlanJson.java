@@ -36,6 +36,9 @@ public final class PhysicalPlanJson {
             sb.append('}');
         } else if (plan instanceof PlanNode.SeqScanPlan s) {
             sb.append("{\"op\":\"scan\",\"table\":").append(Json.quote(s.getTableName())).append('}');
+        } else if (plan instanceof PlanNode.JoinPlan j) {
+            // 存储核心的 join 为二元节点，多表连接折叠为左深二叉链
+            writeJoinChain(j.getChildren(), j.getOnConditions(), 0, sb);
         } else if (plan instanceof PlanNode.InsertPlan p) {
             sb.append("{\"op\":\"insert\",\"table\":").append(Json.quote(p.getTableName()));
             // 列清单可省略，省略时存储核心按建表顺序对应 values
@@ -88,6 +91,30 @@ public final class PhysicalPlanJson {
         } else {
             throw new IllegalArgumentException("不支持的条件表达式: " + cond);
         }
+    }
+
+    /** 多表连接折叠为左深二叉 join 链；约定 children[0] 为主表（onCondition 为 null） */
+    private static void writeJoinChain(java.util.List<PlanNode> children,
+                                       java.util.List<ASTNode> onConditions,
+                                       int index, StringBuilder sb) {
+        if (children.size() < 2) {
+            throw new IllegalArgumentException("join 至少需要两个子计划");
+        }
+        sb.append("{\"op\":\"join\",\"type\":\"inner\",\"left\":");
+        writeNode(children.get(index), sb);
+        sb.append(",\"right\":");
+        if (index == children.size() - 2) {
+            writeNode(children.get(index + 1), sb);
+        } else {
+            writeJoinChain(children, onConditions, index + 1, sb);
+        }
+        ASTNode condition = onConditions.get(index + 1);
+        if (condition == null) {
+            throw new IllegalArgumentException("join 缺少 ON 连接条件");
+        }
+        sb.append(",\"condition\":");
+        writeCondition(condition, sb);
+        sb.append('}');
     }
 
     /** 运算符归一化：== 写法、逻辑运算符符号形式转为存储核心识别的关键字 */

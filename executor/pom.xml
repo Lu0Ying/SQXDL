@@ -27,5 +27,17 @@
             <groupId>com.sqxdl</groupId>
             <artifactId>sqxdl-parser</artifactId>
         </dependency>
+        <!-- JLine：CLI 真终端的方向键历史与行编辑（管道输入时自动回退 Scanner） -->
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline</artifactId>
+            <version>3.27.1</version>
+        </dependency>
+        <!-- Windows 下提供真终端的 provider（传递引入 JNA） -->
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline-terminal-jna</artifactId>
+            <version>3.27.1</version>
+        </dependency>
     </dependencies>
 </project>
