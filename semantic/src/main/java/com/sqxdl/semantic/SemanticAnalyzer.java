@@ -112,8 +112,11 @@ public class SemanticAnalyzer {
 
     private void checkSelectColumns(String tableName, List<String> columns, ASTNode node) {
         for (String col : columns) {
-            if (isAggregate(col)) {
-                continue; // 聚合项（如 COUNT(*)）不是真实列，跳过列存在性校验
+            AggregateFunction agg = AggregateFunction.parse(col);
+            if (agg != null) {
+                // 聚合项：校验参数列存在性与类型合法性
+                checkAggregateArg(agg, List.of(tableName), node);
+                continue;
             }
             if (!catalog.columnExists(tableName, col)) {
                 throw error("表 " + tableName + " 中不存在列 " + col, node);
@@ -127,16 +130,45 @@ public class SemanticAnalyzer {
      */
     private void checkSelectColumns(List<String> tableNames, List<String> columns, ASTNode node) {
         for (String col : columns) {
-            if (isAggregate(col)) {
-                continue; // 聚合项（如 COUNT(*)）不是真实列，跳过列存在性校验
+            AggregateFunction agg = AggregateFunction.parse(col);
+            if (agg != null) {
+                // 聚合项：校验参数列存在性与类型合法性
+                checkAggregateArg(agg, tableNames, node);
+                continue;
             }
             resolveColumn(col, tableNames, node);
         }
     }
 
-    /** 判断投影项是否为聚合函数调用（Parser 归一化为 "COUNT(*)" 形式） */
+    /** 判断投影项是否为聚合函数调用 */
     private boolean isAggregate(String column) {
-        return "COUNT(*)".equalsIgnoreCase(column);
+        return AggregateFunction.isAggregate(column);
+    }
+
+    /**
+     * 校验聚合函数参数：参数列必须存在且类型合法。
+     * <p>
+     * 规则：
+     * <ul>
+     *   <li>COUNT(*)：无参数列，直接通过</li>
+     *   <li>SUM/AVG：参数列必须为数值类型</li>
+     *   <li>MIN/MAX：参数列可为任意类型</li>
+     * </ul>
+     */
+    private void checkAggregateArg(AggregateFunction agg, List<String> tableNames, ASTNode node) {
+        if (agg.isCountStar()) {
+            return;  // COUNT(*) 不需要参数列校验
+        }
+        String argCol = agg.getArgument();
+        String resolvedTable = resolveColumn(argCol, tableNames, node);
+        // 拆分点限定列名取纯列名
+        String columnName = argCol.contains(".")
+                ? argCol.substring(argCol.indexOf('.') + 1) : argCol;
+        CatalogImpl.DataType argType = catalog.getColumnType(resolvedTable, columnName);
+        if (!agg.isArgTypeValid(argType)) {
+            throw error("聚合函数 " + agg.getName() + " 的参数列 " + argCol
+                    + " 类型 " + argType + " 不合法（需为数值类型）", node);
+        }
     }
 
     /**

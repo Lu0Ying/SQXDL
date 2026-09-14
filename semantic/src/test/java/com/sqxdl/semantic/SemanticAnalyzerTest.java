@@ -910,4 +910,125 @@ class SemanticAnalyzerTest {
                 List.of(new ASTNode.SelectStmt.OrderItem("course.cname", "ASC")));
         assertDoesNotThrow(() -> analyzer.analyze(stmt));
     }
+
+    // ========== 聚合函数 SUM/AVG/MIN/MAX ==========
+
+    @Test
+    void sum_validNumericColumn_succeeds() {
+        // SELECT SUM(age) FROM student（age 为 INT）
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("SUM(age)"), null,
+                List.of(), List.of(), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void avg_validNumericColumn_succeeds() {
+        // SELECT AVG(age) FROM student
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("AVG(age)"), null,
+                List.of(), List.of(), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void min_validColumn_succeeds() {
+        // SELECT MIN(age) FROM student
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("MIN(age)"), null,
+                List.of(), List.of(), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void max_validColumn_succeeds() {
+        // SELECT MAX(age) FROM student
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("MAX(age)"), null,
+                List.of(), List.of(), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void sum_varcharColumn_throwsTypeMismatch() {
+        // SELECT SUM(name) FROM student（name 为 VARCHAR，不合法）
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("SUM(name)"), null,
+                List.of(), List.of(), List.of());
+        SqxdlException ex = assertThrows(SqxdlException.class,
+                () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("SUM"));
+        assertTrue(ex.getMessage().contains("不合法"));
+    }
+
+    @Test
+    void avg_varcharColumn_throwsTypeMismatch() {
+        // SELECT AVG(name) FROM student（name 为 VARCHAR，不合法）
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("AVG(name)"), null,
+                List.of(), List.of(), List.of());
+        assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void min_varcharColumn_succeeds() {
+        // SELECT MIN(name) FROM student（MIN 允许字符串）
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("MIN(name)"), null,
+                List.of(), List.of(), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void max_varcharColumn_succeeds() {
+        // SELECT MAX(name) FROM student（MAX 允许字符串）
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("MAX(name)"), null,
+                List.of(), List.of(), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void sum_nonExistentColumn_throwsError() {
+        // SELECT SUM(score) FROM student（score 列不存在）
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("SUM(score)"), null,
+                List.of(), List.of(), List.of());
+        assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void aggregate_withGroupBy_succeeds() {
+        // SELECT grade, SUM(age), COUNT(*) FROM student GROUP BY grade
+        // 需要添加 grade 列
+        catalog.createTableWithTypes("temp_student", Arrays.asList(
+                new CatalogImpl.ColumnInfo("id", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("grade", CatalogImpl.DataType.VARCHAR),
+                new CatalogImpl.ColumnInfo("age", CatalogImpl.DataType.INT)
+        ));
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "temp_student",
+                Arrays.asList("grade", "SUM(age)", "COUNT(*)"),
+                null, List.of(), List.of("grade"), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void aggregate_multiTable_qualifiedColumn_succeeds() {
+        // SELECT student.name, SUM(course.cid) FROM student JOIN course ON ...
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "student.id"),
+                new ASTNode.IdentifierExpr(1, 40, "course.cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student",
+                Arrays.asList("student.name", "SUM(course.cid)"),
+                null, List.of(join), List.of(), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
 }

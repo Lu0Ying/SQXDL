@@ -355,21 +355,37 @@ public abstract class PlanNode {
     }
 
     /**
-     * 分组计划：按 groupBy 列对 child 输出做分组。
+     * 分组计划：按 groupBy 列对 child 输出做分组，并对每组计算聚合函数。
      * 对应 SQL 的 GROUP BY 子句。无聚合函数时仅做去重分组。
+     * <p>
+     * aggregates 为本次查询中 SELECT 清单出现的聚合函数列表（字符串形式，
+     * 如 "COUNT(*)"、"SUM(age)"），执行器据此对每个分组计算对应聚合值，
+     * 并按顺序追加到输出列尾。
      */
     public static class GroupByPlan extends PlanNode {
 
         private final List<String> groupByColumns;
+        private final List<String> aggregates;
         private final PlanNode child;
 
         public GroupByPlan(List<String> groupByColumns, PlanNode child) {
+            this(groupByColumns, new ArrayList<>(), child);
+        }
+
+        public GroupByPlan(List<String> groupByColumns, List<String> aggregates,
+                           PlanNode child) {
             this.groupByColumns = groupByColumns;
+            this.aggregates = aggregates == null ? new ArrayList<>() : aggregates;
             this.child = child;
         }
 
         public List<String> getGroupByColumns() {
             return groupByColumns;
+        }
+
+        /** 聚合函数列表（字符串形式，如 "SUM(age)"） */
+        public List<String> getAggregates() {
+            return aggregates;
         }
 
         public PlanNode getChild() {
@@ -378,7 +394,8 @@ public abstract class PlanNode {
 
         @Override
         public String toString() {
-            return "GroupBy{columns=" + groupByColumns + ", child=" + child + "}";
+            return "GroupBy{columns=" + groupByColumns
+                    + ", aggregates=" + aggregates + ", child=" + child + "}";
         }
     }
 
@@ -545,6 +562,9 @@ public abstract class PlanNode {
             }
         } else if (node instanceof GroupByPlan p) {
             detailLine(sb, depth, "columns", p.getGroupByColumns());
+            if (!p.getAggregates().isEmpty()) {
+                detailLine(sb, depth, "aggregates", p.getAggregates());
+            }
         } else if (node instanceof OrderByPlan p) {
             detailLine(sb, depth, "items", p.getOrderByItems());
         }

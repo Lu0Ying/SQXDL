@@ -180,7 +180,9 @@ public class PlanGenerator {
 
         // === 叠加 GROUP BY（可选）===
         if (!stmt.getGroupBy().isEmpty() || hasAggregate(stmt)) {
-            plan = new PlanNode.GroupByPlan(new ArrayList<>(stmt.getGroupBy()), plan);
+            List<String> aggList = collectAggregates(stmt);
+            plan = new PlanNode.GroupByPlan(new ArrayList<>(stmt.getGroupBy()),
+                    aggList, plan);
         }
 
         // === 叠加 ORDER BY（可选）===
@@ -521,13 +523,19 @@ public class PlanGenerator {
 
         // SELECT 清单中的列
         for (String col : selectList) {
-            if (isAggregate(col)) {
-                // COUNT(*) 需要所有表的列（执行器要数行数）
-                for (String t : tableNames) {
-                    List<String> cols = catalog.getColumns(t);
-                    if (cols != null) {
-                        result.get(t).addAll(cols);
+            AggregateFunction agg = AggregateFunction.parse(col);
+            if (agg != null) {
+                if (agg.isCountStar()) {
+                    // COUNT(*) 需要所有表的列（执行器要数行数）
+                    for (String t : tableNames) {
+                        List<String> cols = catalog.getColumns(t);
+                        if (cols != null) {
+                            result.get(t).addAll(cols);
+                        }
                     }
+                } else {
+                    // SUM/AVG/MIN/MAX/COUNT(col)：只需要参数列
+                    addColumnRef(agg.getArgument(), tableNames, result);
                 }
             } else {
                 addColumnRef(col, tableNames, result);
@@ -611,7 +619,7 @@ public class PlanGenerator {
         return allColumns == null ? new ArrayList<>() : allColumns;
     }
 
-    /** 投影清单是否含聚合项（如 COUNT(*)）；SELECT * 展开结果不含聚合 */
+    /** 投影清单是否含聚合项（如 COUNT(*)、SUM(age)）；SELECT * 展开结果不含聚合 */
     private boolean hasAggregate(ASTNode.SelectStmt stmt) {
         for (String column : stmt.getSelectList()) {
             if (isAggregate(column)) {
@@ -621,9 +629,23 @@ public class PlanGenerator {
         return false;
     }
 
-    /** 判断投影项是否为聚合函数调用（Parser 归一化为 "COUNT(*)" 形式） */
+    /** 判断投影项是否为聚合函数调用 */
     private boolean isAggregate(String column) {
-        return "COUNT(*)".equalsIgnoreCase(column);
+        return AggregateFunction.isAggregate(column);
+    }
+
+    /**
+     * 收集 SELECT 清单中出现的所有聚合函数（保持出现顺序）。
+     * 用于 GroupByPlan 的 aggregates 字段，执行器据此对每组计算聚合值。
+     */
+    private List<String> collectAggregates(ASTNode.SelectStmt stmt) {
+        List<String> result = new ArrayList<>();
+        for (String column : stmt.getSelectList()) {
+            if (isAggregate(column)) {
+                result.add(column);
+            }
+        }
+        return result;
     }
 
     // ========== 条件优化入口 ==========
@@ -1011,6 +1033,11 @@ public class PlanGenerator {
         } else if (plan instanceof PlanNode.GroupByPlan p) {
             sb.append("\"op\":\"groupBy\",\"columns\":");
             writeStringList(sb, p.getGroupByColumns());
+            // 聚合函数列表（非空时输出，供执行器计算每组聚合值）
+            if (!p.getAggregates().isEmpty()) {
+                sb.append(",\"aggregates\":");
+                writeStringList(sb, p.getAggregates());
+            }
             sb.append(",\"child\":");
             writePlanNode(sb, p.getChild());
         } else if (plan instanceof PlanNode.OrderByPlan p) {

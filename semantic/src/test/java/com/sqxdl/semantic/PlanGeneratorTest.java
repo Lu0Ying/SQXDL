@@ -2461,4 +2461,158 @@ class PlanGeneratorTest {
         assertTrue(json.contains("\"table\":\"student\""));
         assertTrue(json.contains("\"algorithms\""));
     }
+
+    // ========== 聚合函数 SUM/AVG/MIN/MAX ==========
+
+    @Test
+    void sum_generatesGroupByPlanWithAggregates() {
+        // SELECT SUM(age) FROM student（无 GROUP BY，全表聚合）
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("SUM(age)"), null,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        // Project → GroupBy(aggregates=[SUM(age)]) → SeqScan
+        assertInstanceOf(PlanNode.ProjectPlan.class, plan);
+        PlanNode groupBy = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.GroupByPlan.class, groupBy);
+        PlanNode.GroupByPlan gbp = (PlanNode.GroupByPlan) groupBy;
+        // 聚合列表应含 SUM(age)
+        assertEquals(1, gbp.getAggregates().size());
+        assertEquals("SUM(age)", gbp.getAggregates().get(0));
+        // 列裁剪：SeqScan 只读 age 列
+        assertInstanceOf(PlanNode.SeqScanPlan.class, gbp.getChild());
+        PlanNode.SeqScanPlan scan = (PlanNode.SeqScanPlan) gbp.getChild();
+        assertNotNull(scan.getColumns());
+        assertTrue(scan.getColumns().contains("age"));
+    }
+
+    @Test
+    void avg_generatesGroupByPlanWithAggregates() {
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("AVG(age)"), null,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        PlanNode groupBy = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.GroupByPlan.class, groupBy);
+        PlanNode.GroupByPlan gbp = (PlanNode.GroupByPlan) groupBy;
+        assertEquals(1, gbp.getAggregates().size());
+        assertEquals("AVG(age)", gbp.getAggregates().get(0));
+    }
+
+    @Test
+    void min_generatesGroupByPlanWithAggregates() {
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("MIN(age)"), null,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        PlanNode groupBy = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.GroupByPlan.class, groupBy);
+        PlanNode.GroupByPlan gbp = (PlanNode.GroupByPlan) groupBy;
+        assertEquals(1, gbp.getAggregates().size());
+        assertEquals("MIN(age)", gbp.getAggregates().get(0));
+    }
+
+    @Test
+    void max_generatesGroupByPlanWithAggregates() {
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("MAX(age)"), null,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        PlanNode groupBy = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.GroupByPlan.class, groupBy);
+        PlanNode.GroupByPlan gbp = (PlanNode.GroupByPlan) groupBy;
+        assertEquals(1, gbp.getAggregates().size());
+        assertEquals("MAX(age)", gbp.getAggregates().get(0));
+    }
+
+    @Test
+    void multipleAggregates_collectedInOrder() {
+        // SELECT SUM(age), MAX(age), COUNT(*) FROM student
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student",
+                Arrays.asList("SUM(age)", "MAX(age)", "COUNT(*)"),
+                null, List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        PlanNode groupBy = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.GroupByPlan.class, groupBy);
+        PlanNode.GroupByPlan gbp = (PlanNode.GroupByPlan) groupBy;
+        // 三个聚合函数，按 SELECT 顺序
+        assertEquals(3, gbp.getAggregates().size());
+        assertEquals("SUM(age)", gbp.getAggregates().get(0));
+        assertEquals("MAX(age)", gbp.getAggregates().get(1));
+        assertEquals("COUNT(*)", gbp.getAggregates().get(2));
+    }
+
+    @Test
+    void aggregate_withGroupByByColumn() {
+        // SELECT grade, SUM(age) FROM temp_student GROUP BY grade
+        catalog.createTableWithTypes("temp_student", Arrays.asList(
+                new CatalogImpl.ColumnInfo("id", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("grade", CatalogImpl.DataType.VARCHAR),
+                new CatalogImpl.ColumnInfo("age", CatalogImpl.DataType.INT)
+        ));
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "temp_student",
+                Arrays.asList("grade", "SUM(age)"),
+                null, List.of(), List.of("grade"), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        // Project → GroupBy(columns=[grade], aggregates=[SUM(age)]) → SeqScan
+        assertInstanceOf(PlanNode.ProjectPlan.class, plan);
+        PlanNode groupBy = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.GroupByPlan.class, groupBy);
+        PlanNode.GroupByPlan gbp = (PlanNode.GroupByPlan) groupBy;
+        assertEquals(Arrays.asList("grade"), gbp.getGroupByColumns());
+        assertEquals(1, gbp.getAggregates().size());
+        assertEquals("SUM(age)", gbp.getAggregates().get(0));
+    }
+
+    @Test
+    void aggregate_columnPruning_onlyReadsArgColumn() {
+        // SELECT SUM(age) FROM student → SeqScan 只读 age（id、name 不读）
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("SUM(age)"), null,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        PlanNode groupBy = ((PlanNode.ProjectPlan) plan).getChild();
+        assertInstanceOf(PlanNode.SeqScanPlan.class, ((PlanNode.GroupByPlan) groupBy).getChild());
+        PlanNode.SeqScanPlan scan = (PlanNode.SeqScanPlan)
+                ((PlanNode.GroupByPlan) groupBy).getChild();
+        assertNotNull(scan.getColumns());
+        assertEquals(1, scan.getColumns().size());
+        assertEquals("age", scan.getColumns().get(0));
+    }
+
+    @Test
+    void aggregate_jsonSerialization_includesAggregates() {
+        // JSON 中应含 "aggregates":["SUM(age)"]
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("SUM(age)"), null,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+        String json = generator.toJson(plan);
+
+        assertTrue(json.contains("\"op\":\"groupBy\""));
+        assertTrue(json.contains("\"aggregates\""));
+        assertTrue(json.contains("\"SUM(age)\""));
+    }
+
+    @Test
+    void aggregate_formatPlan_showsAggregates() {
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("SUM(age)"), null,
+                List.of(), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        String output = PlanNode.formatPlan(plan);
+        assertTrue(output.contains("GroupByPlan"));
+        assertTrue(output.contains("aggregates"));
+        assertTrue(output.contains("SUM(age)"));
+    }
 }
