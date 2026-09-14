@@ -177,6 +177,8 @@ Parser 在构建 WHERE 表达式树后立即做两层优化（后序遍历）：
 
 动机：WHERE 条件在 executor 中逐行求值，编译期能省的运算不在运行期重复。折叠后若 WHERE 恒真/恒假，executor 可直接跳过全表过滤。
 
+> **B 组必读**：优化细则、边界行为与对 semantic 的影响见 [optimization.md](optimization.md)（如"原始表达式不可恢复""除零是编译期错误"等约定）。
+
 ## 测试
 
 ```bash
