@@ -71,6 +71,20 @@ ShowStmt
 
 > 该工具仅作 A 组自测与组间演示，不参与解析核心逻辑。
 
+## 规范 SQL 还原（Pretty Printer）
+
+`SqlPrinter.print(astNode)` 把 AST 递归还原成规范 SQL 文本（表达式统一加括号，与 AST 结构严格对应）：
+
+```java
+ASTNode stmt = new Parser(new Lexer("select * from t where age = 1 + 2")).parse();
+String sql = SqlPrinter.print(stmt);   // SELECT * FROM t WHERE (age = 3)
+```
+
+三点用途：
+1. **演示**：输入乱 SQL → 输出规范化 SQL，直观展示解析与编译期优化结果（常量折叠/逻辑简化在还原文本中直接可见）；
+2. **验证**：round-trip（parse → print → parse）两次还原结果一致，可校验 AST 结构完整性；
+3. **差分验证**：还原出的 SQL 可直接交给 H2 等工业级引擎执行，用成熟引擎交叉验证解析正确性（见测试段 DiffTest）。
+
 ## 支持的 SQL 语法
 
 | 语句 | 语法 |
@@ -138,8 +152,8 @@ WHERE 条件表达式按优先级解析（低 → 高）：
 第3行第19列: unexpected token ';'，期望: IDENTIFIER | CONST | '(' | ')' | NOT
 ```
 
-单语句 `parse()` 遇错直接抛出；多语句 `parseAll()` 具备**错误恢复**：出错语句记入 `getErrors()`，
-跳过到下一个 `;`（或 EOF）后继续解析后续语句。
+单语句 `parse()` 遇错直接抛出；多语句 `parseAll()` 具备**错误恢复**：语法错误与词法错误（非法字符等）
+都记入 `getErrors()`，跳过到下一个 `;`（或 EOF）后继续解析后续语句，坏语句不中断整体批处理。
 
 ```java
 Parser p = new Parser(new Lexer("SELECT 1 2; SELECT id FROM t;"));
@@ -169,4 +183,6 @@ Parser 在构建 WHERE 表达式树后立即做两层优化（后序遍历）：
 mvn -pl parser test
 ```
 
-`LexerTest`（23 例）覆盖五类 Token、注释、转义、行列号、拼写纠错与非法输入；`ParserTest`（77 例）覆盖语句解析（含 SHOW/DESCRIBE/DESC、DROP TABLE、JOIN、GROUP BY、ORDER BY）、表达式优先级（含课程示例 `a = 1 OR b = 2 AND c = 3`）、NOT/括号、列类型、常量折叠、逻辑简化、错误格式（`unexpected token` + 期望终结符列表）、错误恢复与多语句输入；`EdgeCaseTest`（22 例）集中覆盖词法、拼写纠错、表达式、SHOW/DROP 边界与错误恢复临界场景。共 122 例。
+`LexerTest`（23 例）覆盖五类 Token、注释、转义、行列号、拼写纠错与非法输入；`ParserTest`（77 例）覆盖语句解析（含 SHOW/DESCRIBE/DESC、DROP TABLE、JOIN、GROUP BY、ORDER BY）、表达式优先级（含课程示例 `a = 1 OR b = 2 AND c = 3`）、NOT/括号、列类型、常量折叠、逻辑简化、错误格式（`unexpected token` + 期望终结符列表）、错误恢复与多语句输入；`EdgeCaseTest`（22 例）集中覆盖词法、拼写纠错、表达式、SHOW/DROP 边界与错误恢复临界场景；`FuzzTest`（4 组 jqwik 属性测试，每组随机数百组输入）验证 Lexer/Parser 对任意输入只抛统一异常 `SqxdlException`、错误恒带 `[行:列]` 定位前缀、合法模板 SQL 不崩溃；`SqlPrinterTest`（8 例）验证规范 SQL 还原文本与 round-trip 稳定性；`DiffTest`（4 例）用 H2 内存库执行还原出的 SQL 做差分验证（CRUD 全流程、JOIN/GROUP BY/ORDER BY、常量折叠、转义字符串）。共 138 例。
+
+> 测试依赖：`net.jqwik:jqwik:1.8.5`（模糊测试）、`com.h2database:h2:2.2.224`（差分验证），均 test scope，见 `parser/pom.xml`。模糊测试期间抓出并修复的真实缺陷：非法字符抛错未推进位置（错误恢复死循环风险）、`parseAll` 错误恢复未覆盖词法错误——现均已修复，词法/语法错误统一参与错误恢复。
