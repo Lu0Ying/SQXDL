@@ -1,5 +1,6 @@
 package com.sqxdl.executor;
 
+import com.sqxdl.executor.storage.PhysicalPlanJson;
 import com.sqxdl.executor.storage.StorageClient;
 import com.sqxdl.executor.storage.StorageResult;
 import com.sqxdl.executor.storage.StorageTableMetadataProvider;
@@ -84,6 +85,9 @@ public class SqlEngine implements AutoCloseable {
     /** 最近一次执行是否回退到模拟模式；null 表示走了真实存储 */
     private String fallbackReason;
 
+    /** 最近一次执行的词法拼写纠错提示（A 组 Lexer 自动纠正时收集） */
+    private List<String> spellWarnings = List.of();
+
     /** 存储核心是否可用（AUTO 模式下构造阶段探测） */
     private boolean storageAvailable;
 
@@ -117,6 +121,11 @@ public class SqlEngine implements AutoCloseable {
     /** 最近一次执行的回退说明；null 表示真实执行 */
     public String getFallbackReason() {
         return fallbackReason;
+    }
+
+    /** 最近一次执行的词法拼写纠错提示（无纠错时为空列表） */
+    public List<String> getSpellWarnings() {
+        return spellWarnings;
     }
 
     /** 存储核心是否可用（AUTO 模式下为真） */
@@ -159,23 +168,23 @@ public class SqlEngine implements AutoCloseable {
         return true;
     }
 
-    /** 空库预置示例数据：逐条走完整流水线（CREATE + INSERT 真实落库） */
+    /** 空库预置示例数据：逐条走完整流水线（CREATE + INSERT 真实落库）；分号必填约定下同样要带分号 */
     private void bootstrapSampleData() {
-        execute("CREATE TABLE student (id INT, name VARCHAR, age INT, grade VARCHAR)");
-        execute("CREATE TABLE course (cid INT, title VARCHAR, credit INT)");
-        execute("CREATE TABLE teacher (tid INT, name VARCHAR, dept VARCHAR)");
+        execute("CREATE TABLE student (id INT, name VARCHAR, age INT, grade VARCHAR);");
+        execute("CREATE TABLE course (cid INT, title VARCHAR, credit INT);");
+        execute("CREATE TABLE teacher (tid INT, name VARCHAR, dept VARCHAR);");
         String[] inserts = {
-                "INSERT INTO student VALUES (1, 'Alice', 20, 'A')",
-                "INSERT INTO student VALUES (2, 'Bob', 22, 'B+')",
-                "INSERT INTO student VALUES (3, 'Carol', 21, 'A-')",
-                "INSERT INTO student VALUES (4, 'David', 23, 'B')",
-                "INSERT INTO student VALUES (5, 'Eve', 19, 'A+')",
-                "INSERT INTO course VALUES (101, 'Database', 4)",
-                "INSERT INTO course VALUES (102, 'Operating Sys', 3)",
-                "INSERT INTO course VALUES (103, 'Compiler', 4)",
-                "INSERT INTO teacher VALUES (1, 'Yao Xin', 'Computer')",
-                "INSERT INTO teacher VALUES (2, 'Gui Ning', 'Computer')",
-                "INSERT INTO teacher VALUES (3, 'Deng Lei', 'Computer')"
+                "INSERT INTO student VALUES (1, 'Alice', 20, 'A');",
+                "INSERT INTO student VALUES (2, 'Bob', 22, 'B+');",
+                "INSERT INTO student VALUES (3, 'Carol', 21, 'A-');",
+                "INSERT INTO student VALUES (4, 'David', 23, 'B');",
+                "INSERT INTO student VALUES (5, 'Eve', 19, 'A+');",
+                "INSERT INTO course VALUES (101, 'Database', 4);",
+                "INSERT INTO course VALUES (102, 'Operating Sys', 3);",
+                "INSERT INTO course VALUES (103, 'Compiler', 4);",
+                "INSERT INTO teacher VALUES (1, 'Yao Xin', 'Computer');",
+                "INSERT INTO teacher VALUES (2, 'Gui Ning', 'Computer');",
+                "INSERT INTO teacher VALUES (3, 'Deng Lei', 'Computer');"
         };
         for (String sql : inserts) {
             execute(sql);
@@ -188,22 +197,45 @@ public class SqlEngine implements AutoCloseable {
      */
     public StorageResult execute(String sql) {
         fallbackReason = null;
-        String normalized = normalize(sql);
+        // 每条语句先清空上一条的拼写提示，防止语法失败提前返回时旧提示跨语句残留
+        spellWarnings = List.of();
+        // 规范化：去首尾空白；分号必填，缺失报 SYNTAX_ERROR；去分号后交给 Parser
+        String trimmed = sql.trim();
+        if (trimmed.isEmpty()) {
+            return StorageResult.error("EMPTY_SQL", "SQL 语句为空");
+        }
+        if (!trimmed.endsWith(";")) {
+            return StorageResult.error("SYNTAX_ERROR", "语句必须以分号 ; 结尾");
+        }
+        String normalized = trimmed.substring(0, trimmed.length() - 1).trim();
         if (normalized.isEmpty()) {
             return StorageResult.error("EMPTY_SQL", "SQL 语句为空");
         }
 
-        // 阶段一：词法 + 语法解析（复用 A 组真实代码）
+        // 阶段一：词法 + 语法解析（复用 A 组真实代码，含拼写自动纠错）
         ASTNode ast;
+        Lexer lexer = new Lexer(normalized);
         try {
-            ast = new Parser(new Lexer(normalized)).parse();
+            if (SqlDebug.ENABLED) {
+                SqlDebug.printTokens(normalized);
+            }
+            ast = new Parser(lexer).parse();
         } catch (SqxdlException e) {
+            // 语法错误前 Lexer 可能已产出本条的拼写纠正提示（如 SELEC * student），一并带出
+            spellWarnings = lexer.getSpellWarnings();
             return StorageResult.error("SYNTAX_ERROR", e.getMessage());
+        }
+        spellWarnings = lexer.getSpellWarnings();
+        if (SqlDebug.ENABLED) {
+            SqlDebug.printAst(ast);
         }
 
         // 阶段二：语义分析（复用 B 组真实校验，含列类型校验）
         try {
             new SemanticAnalyzer(catalog).analyze(ast);
+            if (SqlDebug.ENABLED) {
+                SqlDebug.printSemantic();
+            }
         } catch (RuntimeException e) {
             return StorageResult.error("SEMANTIC_ERROR", e.getMessage());
         }
@@ -216,10 +248,19 @@ public class SqlEngine implements AutoCloseable {
             tables.put(createStmt.getTableName(), new TableData(infos, new ArrayList<>()));
         }
 
-        // 阶段三：计划生成 + 执行（generate 含表达式优化，任何异常都以 ERROR 返回）
+        // 阶段三：计划生成 + 执行（generate = build + optimize，任何异常都以 ERROR 返回）
         PlanNode plan;
         try {
-            plan = new PlanGenerator(catalog).generate(ast);
+            PlanGenerator generator = new PlanGenerator(catalog);
+            if (SqlDebug.ENABLED) {
+                // DEBUG：分别展示优化前后的计划树，观察常量折叠与恒真过滤移除效果
+                PlanNode raw = generator.build(ast);
+                SqlDebug.printPlan(raw, "Plan 树（优化前）");
+                plan = generator.optimize(raw);
+                SqlDebug.printPlan(plan, "Plan 树（优化后）");
+            } else {
+                plan = generator.generate(ast);
+            }
         } catch (RuntimeException e) {
             return StorageResult.error("PLAN_ERROR", e.getMessage());
         }
@@ -228,7 +269,12 @@ public class SqlEngine implements AutoCloseable {
             return simulate(ast);
         }
         // AUTO 模式走真实存储核心，不可用时回退模拟
-        StorageResult result = storageClient.execute(plan);
+        StorageResult result;
+        try {
+            result = executePlan(plan);
+        } catch (RuntimeException e) {
+            return StorageResult.error("PLAN_ERROR", e.getMessage());
+        }
         if (!isStorageFailure(result)) {
             return result;
         }
@@ -238,18 +284,213 @@ public class SqlEngine implements AutoCloseable {
 
     // ====================== 执行：真实存储 / 模拟回退 ======================
 
-    /** 规范化输入：去首尾空白与末尾分号 */
-    private String normalize(String sql) {
-        String trimmed = sql.trim();
-        return trimmed.endsWith(";")
-                ? trimmed.substring(0, trimmed.length() - 1).trim()
-                : trimmed;
-    }
-
     /** 存储核心缺失/超时视为不可用，需要回退模拟 */
     private boolean isStorageFailure(StorageResult result) {
         return result.getType() == StorageResult.Type.ERROR
                 && STORAGE_FAILURE_CODES.contains(result.getErrorCode());
+    }
+
+    /**
+     * 递归执行计划。存储核心没有 sort/group 算子：含 ORDER BY / GROUP BY 的查询
+     * 由 Java 端对子计划结果做后处理（排序/去重分组），其余子树原样序列化执行；
+     * JOIN 为存储核心原生算子，随子树一起下发。
+     */
+    private StorageResult executePlan(PlanNode plan) {
+        if (plan instanceof PlanNode.OrderByPlan order) {
+            StorageResult rs = executePlan(order.getChild());
+            if (rs.getType() == StorageResult.Type.RESULTSET) {
+                List<String> columns = new ArrayList<>();
+                List<String> directions = new ArrayList<>();
+                for (PlanNode.OrderByPlan.OrderItem item : order.getOrderByItems()) {
+                    columns.add(item.getColumn());
+                    directions.add(item.getDirection());
+                }
+                applyOrdering(rs, columns, directions);
+            }
+            return rs;
+        }
+        if (plan instanceof PlanNode.GroupByPlan group) {
+            StorageResult rs = executePlan(group.getChild());
+            if (rs.getType() == StorageResult.Type.RESULTSET) {
+                return applyGrouping(rs, group.getGroupByColumns());
+            }
+            return rs;
+        }
+        // 投影位于最外层，其子树含后处理节点时投影也转 Java 端完成
+        if (plan instanceof PlanNode.ProjectPlan project && containsPostProcess(project.getChild())) {
+            StorageResult rs = executePlan(project.getChild());
+            if (rs.getType() == StorageResult.Type.RESULTSET) {
+                return projectResult(rs, project.getColumns());
+            }
+            return rs;
+        }
+        return storageClient.call(PhysicalPlanJson.serialize(plan));
+    }
+
+    /** 子树是否包含需要 Java 后处理的节点（ORDER BY / GROUP BY） */
+    private boolean containsPostProcess(PlanNode plan) {
+        if (plan == null) {
+            return false;
+        }
+        if (plan instanceof PlanNode.OrderByPlan || plan instanceof PlanNode.GroupByPlan) {
+            return true;
+        }
+        if (plan instanceof PlanNode.ProjectPlan p) {
+            return containsPostProcess(p.getChild());
+        }
+        if (plan instanceof PlanNode.FilterPlan f) {
+            return containsPostProcess(f.getChild());
+        }
+        return false;
+    }
+
+    /** ORDER BY 后处理：按排序项多键排序（数值按大小、字符串按字典序，null 最前） */
+    private void applyOrdering(StorageResult result, List<String> columns, List<String> directions) {
+        int[] indexes = new int[columns.size()];
+        boolean[] descending = new boolean[columns.size()];
+        for (int i = 0; i < indexes.length; i++) {
+            indexes[i] = requireColumn(result, columns.get(i));
+            descending[i] = "DESC".equalsIgnoreCase(directions.get(i));
+        }
+        result.getRows().sort((row1, row2) -> {
+            for (int i = 0; i < indexes.length; i++) {
+                int cmp = compareValues(row1.get(indexes[i]), row2.get(indexes[i]));
+                if (cmp != 0) {
+                    return descending[i] ? -cmp : cmp;
+                }
+            }
+            return 0;
+        });
+    }
+
+    /**
+     * GROUP BY 后处理：按分组键分组，每组输出一行（代表行取组内首行），
+     * 并在行尾附加 "COUNT(*)" 列 = 组内行数；投影按列名裁剪，未引用的列自然丢弃。
+     * 分组键为空时视为全表一组（SELECT COUNT(*) 无 GROUP BY），空表计数为 0。
+     *
+     * @return 新的结果集（列 = 原列 + COUNT(*)）
+     */
+    private StorageResult applyGrouping(StorageResult result, List<String> groupColumns) {
+        int[] keyIndexes = new int[groupColumns.size()];
+        for (int i = 0; i < keyIndexes.length; i++) {
+            keyIndexes[i] = requireColumn(result, groupColumns.get(i));
+        }
+        // 数值键统一为 double，避免 Long 20 与 Double 20.0 分成两组
+        Map<List<Object>, List<List<Object>>> groups = new LinkedHashMap<>();
+        for (List<Object> row : result.getRows()) {
+            List<Object> key = new ArrayList<>(keyIndexes.length);
+            for (int index : keyIndexes) {
+                Object value = row.get(index);
+                key.add(value instanceof Number number ? number.doubleValue() : value);
+            }
+            groups.computeIfAbsent(key, k -> new ArrayList<>()).add(row);
+        }
+        List<List<Object>> outRows = new ArrayList<>();
+        if (groups.isEmpty() && keyIndexes.length == 0) {
+            // 空表的全表聚合：输出一行计数 0（其余列填 null 占位）
+            List<Object> empty = new ArrayList<>(result.getColumns().size());
+            for (int i = 0; i < result.getColumns().size(); i++) {
+                empty.add(null);
+            }
+            empty.add(0L);
+            outRows.add(empty);
+        }
+        for (List<List<Object>> group : groups.values()) {
+            List<Object> outRow = new ArrayList<>(group.get(0)); // 代表行：键列值即首行值
+            outRow.add((long) group.size());
+            outRows.add(outRow);
+        }
+        List<String> columns = new ArrayList<>(result.getColumns());
+        columns.add("COUNT(*)");
+        return StorageResult.resultset(columns, outRows);
+    }
+
+    /** 投影清单是否含聚合项（如 COUNT(*)），与 PlanGenerator.hasAggregate 判定一致 */
+    private static boolean hasAggregate(List<String> selectList) {
+        for (String column : selectList) {
+            if ("COUNT(*)".equalsIgnoreCase(column)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 投影后处理：SELECT * 原样返回，否则按列清单取值 */
+    private StorageResult projectResult(StorageResult result, List<String> selectList) {
+        if (selectList.contains("*")) {
+            return result;
+        }
+        List<String> outColumns = new ArrayList<>();
+        int[] indexes = new int[selectList.size()];
+        for (int i = 0; i < indexes.length; i++) {
+            String name = selectList.get(i);
+            indexes[i] = requireColumn(result, name);
+            outColumns.add(name.contains(".") ? name : result.getColumns().get(indexes[i]));
+        }
+        List<List<Object>> rows = new ArrayList<>();
+        for (List<Object> row : result.getRows()) {
+            List<Object> projected = new ArrayList<>(indexes.length);
+            for (int index : indexes) {
+                projected.add(row.get(index));
+            }
+            rows.add(projected);
+        }
+        return StorageResult.resultset(outColumns, rows);
+    }
+
+    /** 列名解析：要求存在，不存在抛出异常（由执行层转为 ERROR 结果） */
+    private int requireColumn(StorageResult result, String name) {
+        int index = resolveColumn(result.getColumns(), name);
+        if (index < 0) {
+            throw new IllegalArgumentException("列不存在: " + name);
+        }
+        return index;
+    }
+
+    /**
+     * 列名解析：精确匹配优先；限定名（表.列）在无精确匹配时按唯一裸列名回退。
+     * 兼容 JOIN 结果列的两种形态（裸列名 / 表名前缀）。
+     */
+    private int resolveColumn(List<String> columns, String name) {
+        int exact = columns.indexOf(name);
+        if (exact >= 0) {
+            return exact;
+        }
+        int dot = name.indexOf('.');
+        if (dot <= 0) {
+            return -1;
+        }
+        String shortName = name.substring(dot + 1);
+        String table = name.substring(0, dot);
+        int unique = -1;
+        int hits = 0;
+        for (int i = 0; i < columns.size(); i++) {
+            String column = columns.get(i);
+            if (column.equals(shortName) || column.startsWith(table + "." + shortName)) {
+                hits++;
+                unique = i;
+            }
+        }
+        return hits == 1 ? unique : -1;
+    }
+
+    /** 排序值比较：数值按大小、其余按字符串；null 排最前 */
+    private int compareValues(Object left, Object right) {
+        if (left == null && right == null) {
+            return 0;
+        }
+        if (left == null) {
+            return -1;
+        }
+        if (right == null) {
+            return 1;
+        }
+        Double a = toDouble(left);
+        Double b = toDouble(right);
+        if (a != null && b != null) {
+            return Double.compare(a, b);
+        }
+        return String.valueOf(left).compareTo(String.valueOf(right));
     }
 
     /** 用内置示例数据模拟执行（数据保存在 JVM 内） */
@@ -308,28 +549,102 @@ public class SqlEngine implements AutoCloseable {
         return null;
     }
 
-    /** 模拟 SELECT：按 WHERE 条件过滤，再按列清单投影 */
+    /**
+     * 模拟 SELECT：连接 -> ON/WHERE 过滤 -> GROUP BY 去重分组 -> ORDER BY 排序 -> 投影。
+     * 计划组合顺序与 B 组 PlanGenerator 一致（投影最外层）。
+     */
     private StorageResult simulateSelect(ASTNode.SelectStmt stmt) {
-        TableData data = tables.get(stmt.getTableName());
-        List<String> allNames = data.columnNames();
-        // 投影列：SELECT * 为全部列，否则按列清单
-        List<String> projectedColumns = stmt.getSelectList().contains("*")
-                ? allNames
-                : stmt.getSelectList();
-
-        List<List<Object>> rows = new ArrayList<>();
-        for (List<Object> row : data.rows) {
-            if (stmt.getWhereCond() != null
-                    && !matchesCondition(row, allNames, stmt.getWhereCond())) {
-                continue;
-            }
-            List<Object> projected = new ArrayList<>();
-            for (String column : projectedColumns) {
-                projected.add(row.get(data.indexOf(column)));
-            }
-            rows.add(projected);
+        // 1. 数据源：单表或内存嵌套循环连接（内连接语义）
+        List<String> tableNames = new ArrayList<>();
+        tableNames.add(stmt.getTableName());
+        for (ASTNode.SelectStmt.JoinClause join : stmt.getJoins()) {
+            tableNames.add(join.getTableName());
         }
-        return StorageResult.resultset(projectedColumns, rows);
+        StorageResult source = buildJoinSource(tableNames);
+        // 2. ON 条件（内连接）与 WHERE 过滤
+        List<ASTNode> conditions = new ArrayList<>();
+        for (ASTNode.SelectStmt.JoinClause join : stmt.getJoins()) {
+            if (join.getOnCond() != null) {
+                conditions.add(join.getOnCond());
+            }
+        }
+        if (stmt.getWhereCond() != null) {
+            conditions.add(stmt.getWhereCond());
+        }
+        if (!conditions.isEmpty()) {
+            List<List<Object>> kept = new ArrayList<>();
+            for (List<Object> row : source.getRows()) {
+                boolean matched = true;
+                for (ASTNode condition : conditions) {
+                    if (!matchesCondition(row, source.getColumns(), condition)) {
+                        matched = false;
+                        break;
+                    }
+                }
+                if (matched) {
+                    kept.add(row);
+                }
+            }
+            source = StorageResult.resultset(source.getColumns(), kept);
+        }
+        // 3. GROUP BY 分组并计算聚合（COUNT(*)）；无 GROUP BY 但投影含聚合时全表一组
+        if (!stmt.getGroupBy().isEmpty() || hasAggregate(stmt.getSelectList())) {
+            source = applyGrouping(source, stmt.getGroupBy());
+        }
+        // 4. ORDER BY
+        if (!stmt.getOrderBy().isEmpty()) {
+            List<String> columns = new ArrayList<>();
+            List<String> directions = new ArrayList<>();
+            for (ASTNode.SelectStmt.OrderItem item : stmt.getOrderBy()) {
+                columns.add(item.getColumn());
+                directions.add(item.getDirection());
+            }
+            applyOrdering(source, columns, directions);
+        }
+        // 5. 投影
+        return projectResult(source, stmt.getSelectList());
+    }
+
+    /** 构建连接数据源：多表笛卡尔积，全部列中重名的加 "表名." 前缀消歧 */
+    private StorageResult buildJoinSource(List<String> tableNames) {
+        List<TableData> datas = new ArrayList<>(tableNames.size());
+        List<String> bareNames = new ArrayList<>();
+        for (String name : tableNames) {
+            TableData data = tables.get(name);
+            if (data == null) {
+                throw new IllegalArgumentException("模拟层缺少表数据: " + name);
+            }
+            datas.add(data);
+            bareNames.addAll(data.columnNames());
+        }
+        // 重名检测：出现多于一次的裸列名，所有同名列都加来源前缀
+        List<String> columns = new ArrayList<>();
+        for (int t = 0; t < datas.size(); t++) {
+            for (String column : datas.get(t).columnNames()) {
+                int occurrences = 0;
+                for (String bare : bareNames) {
+                    if (bare.equals(column)) {
+                        occurrences++;
+                    }
+                }
+                columns.add(occurrences > 1 ? tableNames.get(t) + "." + column : column);
+            }
+        }
+        // 笛卡尔积：从一行空行出发逐表展开
+        List<List<Object>> rows = new ArrayList<>();
+        rows.add(new ArrayList<>());
+        for (TableData data : datas) {
+            List<List<Object>> next = new ArrayList<>();
+            for (List<Object> partial : rows) {
+                for (List<Object> row : data.rows) {
+                    List<Object> combined = new ArrayList<>(partial);
+                    combined.addAll(row);
+                    next.add(combined);
+                }
+            }
+            rows = next;
+        }
+        return StorageResult.resultset(columns, rows);
     }
 
     /** 模拟 INSERT：把新行追加到内置数据 */
@@ -457,7 +772,7 @@ public class SqlEngine implements AutoCloseable {
             return literalValue(literal);
         }
         if (expr instanceof ASTNode.IdentifierExpr ref) {
-            int index = columns.indexOf(ref.getName());
+            int index = resolveColumn(columns, ref.getName());
             if (index < 0) {
                 throw new IllegalArgumentException("列不存在: " + ref.getName());
             }

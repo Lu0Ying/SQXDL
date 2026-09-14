@@ -5,8 +5,11 @@ import com.sqxdl.parser.ASTNode.LiteralExpr;
 import com.sqxdl.parser.ASTNode.LiteralExpr.Kind;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 执行计划生成器（B 组）。
@@ -98,18 +101,271 @@ public class PlanGenerator {
     // ========== SELECT 计划生成 ==========
 
     /**
-     * 生成查询计划树：Project -> Filter(可选) -> SeqScan。
+     * 生成查询计划树：
+     *   Project → OrderBy(可选) → GroupBy(可选) → Filter(可选) → Join/SeqScan
+     *
+     * 优化：
+     *   1. 谓词下推：WHERE 条件拆分为合取项，单表谓词下推到 SeqScan 之上
+     *   2. 列裁剪/投影下推：计算每张表实际需要的列，SeqScan 只读取必要列
      * WHERE 条件经过优化后，恒真则跳过 Filter。
      */
     private PlanNode generateSelect(ASTNode.SelectStmt stmt) {
-        PlanNode plan = new PlanNode.SeqScanPlan(stmt.getTableName());
+        List<ASTNode.SelectStmt.JoinClause> joins = stmt.getJoins();
 
-        ASTNode whereCond = optimizeCondition(stmt.getWhereCond());
-        if (whereCond != null) {
-            plan = new PlanNode.FilterPlan(whereCond, plan);
+        // === 收集查询涉及的所有表名 ===
+        List<String> tableNames = new ArrayList<>();
+        tableNames.add(stmt.getTableName());
+        for (ASTNode.SelectStmt.JoinClause join : joins) {
+            tableNames.add(join.getTableName());
         }
 
+        // === 谓词下推：拆分 WHERE 为合取项 ===
+        List<ASTNode> conjuncts = splitConjuncts(optimizeCondition(stmt.getWhereCond()));
+        // 单表谓词按表分组（可下推）；跨表谓词留在 Join 之上
+        Map<String, List<ASTNode>> perTableFilters = new HashMap<>();
+        List<ASTNode> joinFilters = new ArrayList<>();
+        for (ASTNode conjunct : conjuncts) {
+            Set<String> tables = extractTableRefs(conjunct, tableNames);
+            if (tables.size() == 1) {
+                perTableFilters.computeIfAbsent(tables.iterator().next(),
+                        k -> new ArrayList<>()).add(conjunct);
+            } else if (tables.isEmpty() && tableNames.size() == 1) {
+                // 常量谓词（如 FALSE、1>2）：单表查询时下推到唯一表
+                perTableFilters.computeIfAbsent(tableNames.get(0),
+                        k -> new ArrayList<>()).add(conjunct);
+            } else {
+                joinFilters.add(conjunct);
+            }
+        }
+
+        // === 列裁剪：计算每张表实际需要的列 ===
+        Map<String, Set<String>> neededColumns = computeNeededColumns(stmt, tableNames);
+
+        // === 构建数据源 ===
+        PlanNode plan;
+        if (joins.isEmpty()) {
+            // 单表查询：SeqScan + 下推谓词
+            String mainTable = stmt.getTableName();
+            plan = buildScanWithPushdown(mainTable, neededColumns, perTableFilters);
+        } else {
+            // 多表 JOIN：每个子节点是带下推谓词的 SeqScan
+            List<PlanNode> children = new ArrayList<>();
+            List<ASTNode> onConditions = new ArrayList<>();
+            for (int i = 0; i < tableNames.size(); i++) {
+                String table = tableNames.get(i);
+                children.add(buildScanWithPushdown(table, neededColumns, perTableFilters));
+                // 主表 onCondition 约定为 null
+                onConditions.add(i == 0 ? null : optimizeCondition(joins.get(i - 1).getOnCond()));
+            }
+            plan = new PlanNode.JoinPlan(children, onConditions);
+
+            // 跨表谓词留在 Join 之上
+            if (!joinFilters.isEmpty()) {
+                ASTNode remaining = combineWithAnd(joinFilters);
+                plan = new PlanNode.FilterPlan(remaining, plan);
+            }
+        }
+
+        // === 叠加 GROUP BY（可选）===
+        if (!stmt.getGroupBy().isEmpty() || hasAggregate(stmt)) {
+            plan = new PlanNode.GroupByPlan(new ArrayList<>(stmt.getGroupBy()), plan);
+        }
+
+        // === 叠加 ORDER BY（可选）===
+        if (!stmt.getOrderBy().isEmpty()) {
+            List<PlanNode.OrderByPlan.OrderItem> items = new ArrayList<>();
+            for (ASTNode.SelectStmt.OrderItem item : stmt.getOrderBy()) {
+                items.add(new PlanNode.OrderByPlan.OrderItem(item.getColumn(), item.getDirection()));
+            }
+            plan = new PlanNode.OrderByPlan(items, plan);
+        }
+
+        // === 叠加投影 ===
         return new PlanNode.ProjectPlan(expandColumns(stmt), plan);
+    }
+
+    // ========== 谓词下推辅助方法 ==========
+
+    /**
+     * 拆分 AND 连接的合取项为列表。非 AND 表达式返回单元素列表。
+     * 如 a AND (b AND c) → [a, b, c]
+     */
+    private List<ASTNode> splitConjuncts(ASTNode cond) {
+        List<ASTNode> result = new ArrayList<>();
+        if (cond == null) {
+            return result;
+        }
+        if (cond instanceof ASTNode.BinaryExpr bin && "AND".equals(bin.getOp())) {
+            result.addAll(splitConjuncts(bin.getLeft()));
+            result.addAll(splitConjuncts(bin.getRight()));
+        } else {
+            result.add(cond);
+        }
+        return result;
+    }
+
+    /**
+     * 递归提取表达式引用的表名集合。
+     * 点限定标识符（table.column）直接取表名；普通列名查 catalog 找所属表。
+     */
+    private Set<String> extractTableRefs(ASTNode expr, List<String> allTables) {
+        Set<String> tables = new HashSet<>();
+        if (expr instanceof ASTNode.IdentifierExpr col) {
+            String name = col.getName();
+            int dot = name.indexOf('.');
+            if (dot > 0) {
+                tables.add(name.substring(0, dot));
+            } else {
+                for (String t : allTables) {
+                    if (catalog.columnExists(t, name)) {
+                        tables.add(t);
+                    }
+                }
+            }
+        } else if (expr instanceof ASTNode.BinaryExpr bin) {
+            tables.addAll(extractTableRefs(bin.getLeft(), allTables));
+            tables.addAll(extractTableRefs(bin.getRight(), allTables));
+        } else if (expr instanceof ASTNode.UnaryExpr un) {
+            tables.addAll(extractTableRefs(un.getOperand(), allTables));
+        }
+        return tables;
+    }
+
+    /**
+     * 用 AND 合并多个表达式为单个表达式树。列表为空返回 null。
+     */
+    private ASTNode combineWithAnd(List<ASTNode> exprs) {
+        if (exprs.isEmpty()) {
+            return null;
+        }
+        ASTNode result = exprs.get(0);
+        for (int i = 1; i < exprs.size(); i++) {
+            result = new ASTNode.BinaryExpr(result.getLine(), result.getCol(),
+                    "AND", result, exprs.get(i));
+        }
+        return result;
+    }
+
+    /**
+     * 构建带谓词下推的 SeqScan：如果有该表的单表谓词，在 SeqScan 之上叠加 Filter。
+     */
+    private PlanNode buildScanWithPushdown(String table,
+                                           Map<String, Set<String>> neededColumns,
+                                           Map<String, List<ASTNode>> perTableFilters) {
+        // 列裁剪：只扫描实际需要的列
+        List<String> scanCols = null;
+        Set<String> cols = neededColumns.get(table);
+        if (cols != null && !cols.isEmpty()) {
+            List<String> allCols = catalog.getColumns(table);
+            if (allCols != null && !cols.containsAll(allCols)) {
+                scanCols = new ArrayList<>(cols);
+            }
+        }
+        PlanNode scan = new PlanNode.SeqScanPlan(table, scanCols);
+
+        // 谓词下推：在该表上叠加单表谓词
+        List<ASTNode> filters = perTableFilters.get(table);
+        if (filters != null && !filters.isEmpty()) {
+            ASTNode combined = combineWithAnd(filters);
+            return new PlanNode.FilterPlan(combined, scan);
+        }
+        return scan;
+    }
+
+    // ========== 列裁剪辅助方法 ==========
+
+    /**
+     * 计算每张表实际需要的列集（自顶向下收集所有引用的列）。
+     * 列来源：SELECT 清单、WHERE 条件、JOIN ON 条件、GROUP BY、ORDER BY。
+     */
+    private Map<String, Set<String>> computeNeededColumns(ASTNode.SelectStmt stmt,
+                                                          List<String> tableNames) {
+        Map<String, Set<String>> result = new HashMap<>();
+        for (String t : tableNames) {
+            result.put(t, new HashSet<>());
+        }
+
+        // SELECT * 需要所有表的所有列
+        List<String> selectList = stmt.getSelectList();
+        if (selectList.size() == 1 && "*".equals(selectList.get(0))) {
+            for (String t : tableNames) {
+                List<String> cols = catalog.getColumns(t);
+                if (cols != null) {
+                    result.get(t).addAll(cols);
+                }
+            }
+            return result;
+        }
+
+        // SELECT 清单中的列
+        for (String col : selectList) {
+            if (isAggregate(col)) {
+                // COUNT(*) 需要所有表的列（执行器要数行数）
+                for (String t : tableNames) {
+                    List<String> cols = catalog.getColumns(t);
+                    if (cols != null) {
+                        result.get(t).addAll(cols);
+                    }
+                }
+            } else {
+                addColumnRef(col, tableNames, result);
+            }
+        }
+
+        // WHERE 条件中的列
+        collectColumnRefs(stmt.getWhereCond(), tableNames, result);
+
+        // JOIN ON 条件中的列
+        for (ASTNode.SelectStmt.JoinClause join : stmt.getJoins()) {
+            collectColumnRefs(join.getOnCond(), tableNames, result);
+        }
+
+        // GROUP BY 列
+        for (String col : stmt.getGroupBy()) {
+            addColumnRef(col, tableNames, result);
+        }
+
+        // ORDER BY 列
+        for (ASTNode.SelectStmt.OrderItem item : stmt.getOrderBy()) {
+            addColumnRef(item.getColumn(), tableNames, result);
+        }
+
+        return result;
+    }
+
+    /** 将单个列名（可能点限定）加入对应表的需求集 */
+    private void addColumnRef(String col, List<String> tableNames,
+                              Map<String, Set<String>> result) {
+        int dot = col.indexOf('.');
+        if (dot > 0) {
+            String table = col.substring(0, dot);
+            String column = col.substring(dot + 1);
+            if (result.containsKey(table)) {
+                result.get(table).add(column);
+            }
+        } else {
+            for (String t : tableNames) {
+                if (catalog.columnExists(t, col)) {
+                    result.get(t).add(col);
+                }
+            }
+        }
+    }
+
+    /** 递归从表达式中收集所有列引用 */
+    private void collectColumnRefs(ASTNode expr, List<String> tableNames,
+                                   Map<String, Set<String>> result) {
+        if (expr == null) {
+            return;
+        }
+        if (expr instanceof ASTNode.IdentifierExpr col) {
+            addColumnRef(col.getName(), tableNames, result);
+        } else if (expr instanceof ASTNode.BinaryExpr bin) {
+            collectColumnRefs(bin.getLeft(), tableNames, result);
+            collectColumnRefs(bin.getRight(), tableNames, result);
+        } else if (expr instanceof ASTNode.UnaryExpr un) {
+            collectColumnRefs(un.getOperand(), tableNames, result);
+        }
     }
 
     /**
@@ -131,6 +387,21 @@ public class PlanGenerator {
         }
         List<String> allColumns = catalog.getColumns(stmt.getTableName());
         return allColumns == null ? new ArrayList<>() : allColumns;
+    }
+
+    /** 投影清单是否含聚合项（如 COUNT(*)）；SELECT * 展开结果不含聚合 */
+    private boolean hasAggregate(ASTNode.SelectStmt stmt) {
+        for (String column : stmt.getSelectList()) {
+            if (isAggregate(column)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 判断投影项是否为聚合函数调用（Parser 归一化为 "COUNT(*)" 形式） */
+    private boolean isAggregate(String column) {
+        return "COUNT(*)".equalsIgnoreCase(column);
     }
 
     // ========== 条件优化入口 ==========
@@ -160,6 +431,31 @@ public class PlanGenerator {
     private ASTNode optimizeExpr(ASTNode expr) {
         if (expr instanceof LiteralExpr || expr instanceof ASTNode.IdentifierExpr) {
             return expr;
+        }
+        if (expr instanceof ASTNode.UnaryExpr un) {
+            // 1. 递归优化操作数（先折叠内部的常量运算，如 NOT (1+2>3) 内的 1+2）
+            ASTNode operand = optimizeExpr(un.getOperand());
+            String op = un.getOp();
+
+            // 2. 常量折叠：NOT TRUE → FALSE, NOT FALSE → TRUE
+            if (op.equals("NOT") && operand instanceof LiteralExpr lit
+                    && lit.getKind() == Kind.BOOLEAN) {
+                boolean val = Boolean.parseBoolean(lit.getValue());
+                return new LiteralExpr(un.getLine(), un.getCol(),
+                        String.valueOf(!val), Kind.BOOLEAN);
+            }
+
+            // 3. 双重否定消除：NOT NOT x → x
+            if (op.equals("NOT") && operand instanceof ASTNode.UnaryExpr inner
+                    && inner.getOp().equals("NOT")) {
+                return inner.getOperand();
+            }
+
+            // 4. 无变化 → 返回原节点，避免创建多余对象
+            if (operand == un.getOperand()) {
+                return un;
+            }
+            return new ASTNode.UnaryExpr(un.getLine(), un.getCol(), op, operand);
         }
         if (!(expr instanceof ASTNode.BinaryExpr bin)) {
             return expr;
@@ -398,6 +694,10 @@ public class PlanGenerator {
         if (plan instanceof PlanNode.SeqScanPlan p) {
             sb.append("\"op\":\"scan\",\"table\":");
             writeJsonString(sb, p.getTableName());
+            if (p.getColumns() != null) {
+                sb.append(",\"columns\":");
+                writeStringList(sb, p.getColumns());
+            }
         } else if (plan instanceof PlanNode.FilterPlan p) {
             sb.append("\"op\":\"filter\",\"condition\":");
             writeExpr(sb, p.getCondition());
@@ -459,6 +759,44 @@ public class PlanGenerator {
         } else if (plan instanceof PlanNode.DropTablePlan p) {
             sb.append("\"op\":\"dropTable\",\"table\":");
             writeJsonString(sb, p.getTableName());
+        } else if (plan instanceof PlanNode.JoinPlan p) {
+            // JOIN：{"op":"join","children":[子节点...],"on":[条件...]}
+            // on[i] 为 null 表示该子节点为左表，无 ON 条件
+            sb.append("\"op\":\"join\",\"children\":[");
+            for (int i = 0; i < p.getChildren().size(); i++) {
+                if (i > 0) sb.append(",");
+                writePlanNode(sb, p.getChildren().get(i));
+            }
+            sb.append("],\"on\":[");
+            for (int i = 0; i < p.getOnConditions().size(); i++) {
+                if (i > 0) sb.append(",");
+                ASTNode on = p.getOnConditions().get(i);
+                if (on == null) {
+                    sb.append("null");
+                } else {
+                    writeExpr(sb, on);
+                }
+            }
+            sb.append("]");
+        } else if (plan instanceof PlanNode.GroupByPlan p) {
+            sb.append("\"op\":\"groupBy\",\"columns\":");
+            writeStringList(sb, p.getGroupByColumns());
+            sb.append(",\"child\":");
+            writePlanNode(sb, p.getChild());
+        } else if (plan instanceof PlanNode.OrderByPlan p) {
+            // ORDER BY：{"op":"orderBy","items":[{"column":"age","direction":"ASC"},...],"child":{...}}
+            sb.append("\"op\":\"orderBy\",\"items\":[");
+            for (int i = 0; i < p.getOrderByItems().size(); i++) {
+                PlanNode.OrderByPlan.OrderItem item = p.getOrderByItems().get(i);
+                if (i > 0) sb.append(",");
+                sb.append("{\"column\":");
+                writeJsonString(sb, item.getColumn());
+                sb.append(",\"direction\":");
+                writeJsonString(sb, item.getDirection());
+                sb.append("}");
+            }
+            sb.append("],\"child\":");
+            writePlanNode(sb, p.getChild());
         } else {
             throw new IllegalArgumentException("无法序列化的计划节点类型: " + plan.getClass().getSimpleName());
         }
@@ -487,6 +825,11 @@ public class PlanGenerator {
             writeExpr(sb, bin.getLeft());
             sb.append(",\"right\":");
             writeExpr(sb, bin.getRight());
+        } else if (expr instanceof ASTNode.UnaryExpr un) {
+            sb.append("\"type\":\"unary\",\"op\":");
+            writeJsonString(sb, un.getOp());
+            sb.append(",\"operand\":");
+            writeExpr(sb, un.getOperand());
         } else {
             throw new IllegalArgumentException("无法序列化的表达式类型: " + expr.getClass().getSimpleName());
         }

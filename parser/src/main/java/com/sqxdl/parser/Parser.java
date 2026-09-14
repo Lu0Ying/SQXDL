@@ -106,10 +106,26 @@ public class Parser {
     public List<ASTNode> parseAll() {
         errors.clear();
         List<ASTNode> stmts = new ArrayList<>();
-        while (peek().getType() != Token.Type.EOF) {
+        while (true) {
+            Token next;
+            try {
+                next = peek();
+            } catch (SqxdlException e) {
+                // 词法错误（如非法字符）：记录并跳过该输入继续扫描，不中断后续语句
+                errors.add(e);
+                continue;
+            }
+            if (next.getType() == Token.Type.EOF) {
+                break;
+            }
             // 跳过前导/连续分号（空语句）
-            if (peek().getType() == Token.Type.DELIMITER && ";".equals(peek().getLexeme())) {
-                advance();
+            if (next.getType() == Token.Type.DELIMITER && ";".equals(next.getLexeme())) {
+                try {
+                    advance();
+                } catch (SqxdlException e) {
+                    // 分号后紧跟非法字符等词法错误：记录后继续
+                    errors.add(e);
+                }
                 continue;
             }
             try {
@@ -122,14 +138,36 @@ public class Parser {
         return stmts;
     }
 
-    /** 跳到下一条语句边界：丢弃直到（并包括）下一个 ';'，若没有分号则到 EOF */
+    /** 跳到下一条语句边界：丢弃直到（并包括）下一个 ';'，若没有分号则到 EOF。
+     *  扫描途中若再遇词法错误（非法字符），同样记录并继续，保证不会死循环。 */
     private void skipToStatementBoundary() {
-        while (peek().getType() != Token.Type.EOF
-                && !(peek().getType() == Token.Type.DELIMITER && ";".equals(peek().getLexeme()))) {
-            advance();
+        while (true) {
+            Token t;
+            try {
+                t = peek();
+            } catch (SqxdlException e) {
+                // 扫描边界时遇到非法字符：记录并跳过，继续向后扫描
+                errors.add(e);
+                continue;
+            }
+            if (t.getType() == Token.Type.EOF
+                    || (t.getType() == Token.Type.DELIMITER && ";".equals(t.getLexeme()))) {
+                break;
+            }
+            try {
+                advance();
+            } catch (SqxdlException e) {
+                // 跳过时遇到非法字符：记录并继续，Lexer 已推进位置，不会死循环
+                errors.add(e);
+            }
         }
-        if (peek().getType() == Token.Type.DELIMITER && ";".equals(peek().getLexeme())) {
-            advance();
+        try {
+            Token t = peek();
+            if (t.getType() == Token.Type.DELIMITER && ";".equals(t.getLexeme())) {
+                advance();
+            }
+        } catch (SqxdlException ignored) {
+            // 收尾处遇到非法字符：由外层循环的 peek 保护兜底处理
         }
     }
 
@@ -286,8 +324,10 @@ public class Parser {
 
     /**
      * 解析查询列清单：列名 (逗号 列名)*，或 SELECT * 时按约定存单元素 ["*"]。
+     * 支持聚合函数 COUNT(*)：产出虚拟列名 "COUNT(*)"（大小写归一），
+     * 语义层跳过其列校验，执行层在 GROUP BY 分组时计算行数。
      *
-     * @return 列名列表
+     * @return 列名列表（可含聚合项 "COUNT(*)"）
      */
     private List<String> parseSelectList() {
         List<String> columns = new ArrayList<>();
@@ -295,13 +335,34 @@ public class Parser {
             advance();
             columns.add("*");
         } else {
-            columns.add(expect(Token.Type.IDENTIFIER).getLexeme());
+            columns.add(parseSelectItem());
             while (peek().getType() == Token.Type.DELIMITER && ",".equals(peek().getLexeme())) {
                 advance();
-                columns.add(expect(Token.Type.IDENTIFIER).getLexeme());
+                columns.add(parseSelectItem());
             }
         }
         return columns;
+    }
+
+    /**
+     * 解析单个投影项：普通列名 或 聚合函数 COUNT(*)。
+     * COUNT 按 IDENTIFIER 词法产出（非关键字），后跟 "(" "*" ")" 即聚合调用；
+     * 其余函数名或不带 * 参数的写法均按语法错误拒绝。
+     *
+     * @return 列名或虚拟聚合列名 "COUNT(*)"
+     */
+    private String parseSelectItem() {
+        Token item = expect(Token.Type.IDENTIFIER);
+        if (peek().getType() == Token.Type.DELIMITER && "(".equals(peek().getLexeme())) {
+            if (!"COUNT".equalsIgnoreCase(item.getLexeme())) {
+                throw syntaxError(item, "COUNT(*)（暂仅支持 COUNT 聚合）");
+            }
+            advance(); // (
+            expectOperator("*");
+            expectDelimiter(")");
+            return "COUNT(*)";
+        }
+        return item.getLexeme();
     }
 
     /**

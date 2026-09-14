@@ -3,6 +3,7 @@ package com.sqxdl.semantic;
 import com.sqxdl.parser.ASTNode;
 import com.sqxdl.parser.SqxdlException;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -67,30 +68,117 @@ public class SemanticAnalyzer {
     // ========== SELECT ==========
 
     private void analyzeSelectStmt(ASTNode.SelectStmt stmt) {
-        String tableName = stmt.getTableName();
-        checkTableExists(tableName, stmt);
+        // 收集本查询涉及的所有表：主表 + JOIN 表
+        List<String> tableNames = new ArrayList<>();
+        String mainTable = stmt.getTableName();
+        checkTableExists(mainTable, stmt);
+        tableNames.add(mainTable);
+
+        for (ASTNode.SelectStmt.JoinClause join : stmt.getJoins()) {
+            String joinTable = join.getTableName();
+            checkTableExists(joinTable, stmt);
+            tableNames.add(joinTable);
+            // 检查 ON 条件（在多表上下文中解析列）
+            analyzeCondition(join.getOnCond(), tableNames);
+        }
 
         List<String> selectList = stmt.getSelectList();
 
-        // SELECT * 展开
+        // SELECT * 展开：多表查询时展开为所有表的全部列（按表顺序拼接）
         if (selectList.size() == 1 && "*".equals(selectList.get(0))) {
-            List<String> allColumns = catalog.getColumns(tableName);
+            List<String> allColumns = new ArrayList<>();
+            for (String t : tableNames) {
+                allColumns.addAll(catalog.getColumns(t));
+            }
             expandedSelectLists.put(stmt, allColumns);
         } else {
-            checkSelectColumns(tableName, selectList, stmt);
+            checkSelectColumns(tableNames, selectList, stmt);
             expandedSelectLists.put(stmt, selectList);
         }
 
-        // 检查 WHERE 条件
-        analyzeCondition(stmt.getWhereCond(), tableName);
+        // 检查 WHERE 条件（在多表上下文中解析列）
+        analyzeCondition(stmt.getWhereCond(), tableNames);
+
+        // 检查 GROUP BY 列存在性
+        for (String col : stmt.getGroupBy()) {
+            resolveColumn(col, tableNames, stmt);
+        }
+
+        // 检查 ORDER BY 列存在性
+        for (ASTNode.SelectStmt.OrderItem item : stmt.getOrderBy()) {
+            resolveColumn(item.getColumn(), tableNames, stmt);
+        }
     }
 
     private void checkSelectColumns(String tableName, List<String> columns, ASTNode node) {
         for (String col : columns) {
+            if (isAggregate(col)) {
+                continue; // 聚合项（如 COUNT(*)）不是真实列，跳过列存在性校验
+            }
             if (!catalog.columnExists(tableName, col)) {
                 throw error("表 " + tableName + " 中不存在列 " + col, node);
             }
         }
+    }
+
+    /**
+     * 多表版本的列清单校验：列必须在至少一张表中存在；
+     * 若列名在多张表中同时存在则报歧义错误。
+     */
+    private void checkSelectColumns(List<String> tableNames, List<String> columns, ASTNode node) {
+        for (String col : columns) {
+            if (isAggregate(col)) {
+                continue; // 聚合项（如 COUNT(*)）不是真实列，跳过列存在性校验
+            }
+            resolveColumn(col, tableNames, node);
+        }
+    }
+
+    /** 判断投影项是否为聚合函数调用（Parser 归一化为 "COUNT(*)" 形式） */
+    private boolean isAggregate(String column) {
+        return "COUNT(*)".equalsIgnoreCase(column);
+    }
+
+    /**
+     * 在多表上下文中解析列名：返回列所在表名。
+     * 列不存在时报错；列在多表中同时存在时报歧义错误。
+     * 支持点限定标识符（table.column）：检测到 '.' 时按表名+列名直接校验，
+     * 已指定表名故不参与歧义检查。
+     */
+    private String resolveColumn(String col, List<String> tableNames, ASTNode node) {
+        // 点限定标识符：table.column → 拆分后直接校验表与列
+        int dot = col.indexOf('.');
+        if (dot > 0) {
+            String tableName = col.substring(0, dot);
+            String columnName = col.substring(dot + 1);
+            // 表名必须在当前查询涉及的表列表中
+            if (!tableNames.contains(tableName)) {
+                throw error("表 " + tableName + " 不在当前查询涉及的表中", node);
+            }
+            if (!catalog.columnExists(tableName, columnName)) {
+                throw error("列 " + col + " 在表 " + tableName + " 中不存在", node);
+            }
+            return tableName;
+        }
+
+        // 普通列名：在所有表中查找，存在多张表命中时报歧义
+        String found = null;
+        int hit = 0;
+        for (String t : tableNames) {
+            if (catalog.columnExists(t, col)) {
+                if (hit == 0) {
+                    found = t;
+                }
+                hit++;
+            }
+        }
+        if (hit == 0) {
+            throw error("列 " + col + " 在查询涉及的表中均不存在", node);
+        }
+        if (hit > 1) {
+            throw error("列 " + col + " 在多张表中存在，存在歧义，请使用表名限定", node);
+        }
+        return found;
     }
 
     // ========== INSERT ==========
@@ -191,6 +279,71 @@ public class SemanticAnalyzer {
     }
 
     // ========== 条件表达式分析（递归） ==========
+
+    /** 多表上下文版本：JOIN ON / 多表 WHERE 条件分析 */
+    private void analyzeCondition(ASTNode cond, List<String> tableNames) {
+        if (cond == null) {
+            return;
+        }
+        analyzeExpr(cond, tableNames);
+    }
+
+    /** 多表上下文版本：递归分析表达式，列引用在多表中解析 */
+    private CatalogImpl.DataType analyzeExpr(ASTNode expr, List<String> tableNames) {
+        if (expr instanceof ASTNode.IdentifierExpr col) {
+            String name = col.getName();
+            String tableName = resolveColumn(name, tableNames, col);
+            // 点限定标识符：拆分出纯列名再查类型
+            String columnName = name.contains(".") ? name.substring(name.indexOf('.') + 1) : name;
+            return catalog.getColumnType(tableName, columnName);
+        } else if (expr instanceof ASTNode.LiteralExpr lit) {
+            return literalType(lit);
+        } else if (expr instanceof ASTNode.UnaryExpr unary) {
+            analyzeExpr(unary.getOperand(), tableNames);
+            return CatalogImpl.DataType.BOOLEAN;
+        } else if (expr instanceof ASTNode.BinaryExpr bin) {
+            return analyzeBinaryExpr(bin, tableNames);
+        } else {
+            throw error("不支持的表达式类型: " + expr.getClass().getSimpleName(), expr);
+        }
+    }
+
+    /** 多表上下文版本：二元表达式分析 */
+    private CatalogImpl.DataType analyzeBinaryExpr(ASTNode.BinaryExpr expr, List<String> tableNames) {
+        String op = expr.getOp();
+
+        if (isLogicalOp(op)) {
+            CatalogImpl.DataType leftType = analyzeExpr(expr.getLeft(), tableNames);
+            CatalogImpl.DataType rightType = analyzeExpr(expr.getRight(), tableNames);
+            if (leftType != CatalogImpl.DataType.BOOLEAN) {
+                throw error("逻辑运算符 " + op + " 左侧必须是布尔表达式，实际为 " + leftType, expr);
+            }
+            if (rightType != CatalogImpl.DataType.BOOLEAN) {
+                throw error("逻辑运算符 " + op + " 右侧必须是布尔表达式，实际为 " + rightType, expr);
+            }
+            return CatalogImpl.DataType.BOOLEAN;
+        }
+
+        CatalogImpl.DataType leftType = analyzeExpr(expr.getLeft(), tableNames);
+        CatalogImpl.DataType rightType = analyzeExpr(expr.getRight(), tableNames);
+
+        if (isComparisonOp(op)) {
+            if (!typeCompatible(leftType, rightType)) {
+                throw error("比较运算符 " + op + " 两侧类型不兼容: "
+                        + leftType + " vs " + rightType, expr);
+            }
+            return CatalogImpl.DataType.BOOLEAN;
+        } else if (isArithmeticOp(op)) {
+            if (!isNumeric(leftType) || !isNumeric(rightType)) {
+                throw error("算术运算符 " + op + " 两侧都必须是数值类型（INT 或 DOUBLE）", expr);
+            }
+            return (leftType == CatalogImpl.DataType.DOUBLE || rightType == CatalogImpl.DataType.DOUBLE)
+                    ? CatalogImpl.DataType.DOUBLE
+                    : CatalogImpl.DataType.INT;
+        } else {
+            throw error("不支持的运算符: " + op, expr);
+        }
+    }
 
     private void analyzeCondition(ASTNode cond, String tableName) {
         if (cond == null) {
