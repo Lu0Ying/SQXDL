@@ -39,12 +39,24 @@ public class PlanGenerator {
     }
 
     /**
-     * 根据 AST 生成逻辑执行计划。
+     * 根据 AST 生成逻辑执行计划：先构建原始计划树，再整体优化。
      *
      * @param ast 语法树根节点
-     * @return 计划树根节点
+     * @return 优化后的计划树根节点
      */
     public PlanNode generate(ASTNode ast) {
+        return optimize(build(ast));
+    }
+
+    /**
+     * 根据 AST 构建未经优化的原始计划树（条件表达式保持原样）。
+     * 与 {@link #optimize(PlanNode)} 分离，便于上层在 DEBUG 模式下
+     * 观察优化前后的计划差异。
+     *
+     * @param ast 语法树根节点
+     * @return 原始计划树根节点
+     */
+    public PlanNode build(ASTNode ast) {
         if (ast instanceof ASTNode.SelectStmt stmt) {
             return generateSelect(stmt);
         }
@@ -53,11 +65,10 @@ public class PlanGenerator {
         }
         if (ast instanceof ASTNode.UpdateStmt stmt) {
             return new PlanNode.UpdatePlan(stmt.getTableName(), stmt.getAssignments(),
-                    optimizeCondition(stmt.getWhereCond()));
+                    stmt.getWhereCond());
         }
         if (ast instanceof ASTNode.DeleteStmt stmt) {
-            return new PlanNode.DeletePlan(stmt.getTableName(),
-                    optimizeCondition(stmt.getWhereCond()));
+            return new PlanNode.DeletePlan(stmt.getTableName(), stmt.getWhereCond());
         }
         if (ast instanceof ASTNode.CreateTableStmt stmt) {
             // 列名清单 + 带类型的列定义（存储核心建表协议已升级为对象数组）
@@ -98,9 +109,9 @@ public class PlanGenerator {
     // ========== SELECT 计划生成 ==========
 
     /**
-     * 生成查询计划树：
+     * 生成查询计划树（未经优化的原始形态）：
      *   Project → OrderBy(可选) → GroupBy(可选) → Filter(可选) → Join/SeqScan
-     * WHERE 条件经过优化后，恒真则跳过 Filter。
+     * 条件优化（常量折叠/化简/恒真 Filter 移除）由 {@link #optimize(PlanNode)} 统一完成。
      * 多表查询时底层为 JoinPlan（连接多个 SeqScan），单表时为 SeqScan。
      */
     private PlanNode generateSelect(ASTNode.SelectStmt stmt) {
@@ -117,16 +128,16 @@ public class PlanGenerator {
             // 主表作为第一个子节点，其 onCondition 约定为 null
             children.add(new PlanNode.SeqScanPlan(stmt.getTableName()));
             onConditions.add(null);
-            // 各 JOIN 表依次加入
+            // 各 JOIN 表依次加入（ON 条件原始形态，优化统一由 optimize 完成）
             for (ASTNode.SelectStmt.JoinClause join : joins) {
                 children.add(new PlanNode.SeqScanPlan(join.getTableName()));
-                onConditions.add(optimizeCondition(join.getOnCond()));
+                onConditions.add(join.getOnCond());
             }
             plan = new PlanNode.JoinPlan(children, onConditions);
         }
 
-        // 2. 叠加 WHERE 过滤（可选）
-        ASTNode whereCond = optimizeCondition(stmt.getWhereCond());
+        // 2. 叠加 WHERE 过滤（可选；条件原始形态，优化统一由 optimize 完成）
+        ASTNode whereCond = stmt.getWhereCond();
         if (whereCond != null) {
             plan = new PlanNode.FilterPlan(whereCond, plan);
         }
@@ -179,6 +190,55 @@ public class PlanGenerator {
             }
         }
         return false;
+    }
+
+    // ========== 计划树整体优化 ==========
+
+    /**
+     * 对计划树做整体优化：递归收集各节点携带的条件表达式，
+     * 逐个做常量折叠与逻辑化简；恒真过滤条件直接移除对应 Filter 节点。
+     * 其余结构（扫描/投影/分组/排序）保持不变。
+     *
+     * @param plan 优化前的计划树
+     * @return 优化后的计划树（无变化时返回原树或等价新树）
+     */
+    public PlanNode optimize(PlanNode plan) {
+        if (plan instanceof PlanNode.FilterPlan f) {
+            PlanNode child = optimize(f.getChild());
+            ASTNode cond = optimizeCondition(f.getCondition());
+            // 恒真条件（或优化后为空）→ 过滤无意义，整个 Filter 节点移除
+            return cond == null ? child : new PlanNode.FilterPlan(cond, child);
+        }
+        if (plan instanceof PlanNode.ProjectPlan p) {
+            return new PlanNode.ProjectPlan(p.getColumns(), optimize(p.getChild()));
+        }
+        if (plan instanceof PlanNode.GroupByPlan g) {
+            return new PlanNode.GroupByPlan(g.getGroupByColumns(), optimize(g.getChild()));
+        }
+        if (plan instanceof PlanNode.OrderByPlan o) {
+            return new PlanNode.OrderByPlan(o.getOrderByItems(), optimize(o.getChild()));
+        }
+        if (plan instanceof PlanNode.JoinPlan j) {
+            List<PlanNode> children = new ArrayList<>();
+            for (PlanNode child : j.getChildren()) {
+                children.add(optimize(child));
+            }
+            List<ASTNode> onConditions = new ArrayList<>();
+            for (ASTNode on : j.getOnConditions()) {
+                onConditions.add(optimizeCondition(on));
+            }
+            return new PlanNode.JoinPlan(children, onConditions);
+        }
+        if (plan instanceof PlanNode.UpdatePlan u) {
+            // 恒真条件 → null，等价于无 WHERE 作用全表
+            return new PlanNode.UpdatePlan(u.getTableName(), u.getAssignments(),
+                    optimizeCondition(u.getCondition()));
+        }
+        if (plan instanceof PlanNode.DeletePlan d) {
+            return new PlanNode.DeletePlan(d.getTableName(), optimizeCondition(d.getCondition()));
+        }
+        // 叶子节点（SeqScan/Insert/CreateTable/Show/Describe/Drop）无条件可优化
+        return plan;
     }
 
     // ========== 条件优化入口 ==========

@@ -168,23 +168,23 @@ public class SqlEngine implements AutoCloseable {
         return true;
     }
 
-    /** 空库预置示例数据：逐条走完整流水线（CREATE + INSERT 真实落库） */
+    /** 空库预置示例数据：逐条走完整流水线（CREATE + INSERT 真实落库）；分号必填约定下同样要带分号 */
     private void bootstrapSampleData() {
-        execute("CREATE TABLE student (id INT, name VARCHAR, age INT, grade VARCHAR)");
-        execute("CREATE TABLE course (cid INT, title VARCHAR, credit INT)");
-        execute("CREATE TABLE teacher (tid INT, name VARCHAR, dept VARCHAR)");
+        execute("CREATE TABLE student (id INT, name VARCHAR, age INT, grade VARCHAR);");
+        execute("CREATE TABLE course (cid INT, title VARCHAR, credit INT);");
+        execute("CREATE TABLE teacher (tid INT, name VARCHAR, dept VARCHAR);");
         String[] inserts = {
-                "INSERT INTO student VALUES (1, 'Alice', 20, 'A')",
-                "INSERT INTO student VALUES (2, 'Bob', 22, 'B+')",
-                "INSERT INTO student VALUES (3, 'Carol', 21, 'A-')",
-                "INSERT INTO student VALUES (4, 'David', 23, 'B')",
-                "INSERT INTO student VALUES (5, 'Eve', 19, 'A+')",
-                "INSERT INTO course VALUES (101, 'Database', 4)",
-                "INSERT INTO course VALUES (102, 'Operating Sys', 3)",
-                "INSERT INTO course VALUES (103, 'Compiler', 4)",
-                "INSERT INTO teacher VALUES (1, 'Yao Xin', 'Computer')",
-                "INSERT INTO teacher VALUES (2, 'Gui Ning', 'Computer')",
-                "INSERT INTO teacher VALUES (3, 'Deng Lei', 'Computer')"
+                "INSERT INTO student VALUES (1, 'Alice', 20, 'A');",
+                "INSERT INTO student VALUES (2, 'Bob', 22, 'B+');",
+                "INSERT INTO student VALUES (3, 'Carol', 21, 'A-');",
+                "INSERT INTO student VALUES (4, 'David', 23, 'B');",
+                "INSERT INTO student VALUES (5, 'Eve', 19, 'A+');",
+                "INSERT INTO course VALUES (101, 'Database', 4);",
+                "INSERT INTO course VALUES (102, 'Operating Sys', 3);",
+                "INSERT INTO course VALUES (103, 'Compiler', 4);",
+                "INSERT INTO teacher VALUES (1, 'Yao Xin', 'Computer');",
+                "INSERT INTO teacher VALUES (2, 'Gui Ning', 'Computer');",
+                "INSERT INTO teacher VALUES (3, 'Deng Lei', 'Computer');"
         };
         for (String sql : inserts) {
             execute(sql);
@@ -197,24 +197,45 @@ public class SqlEngine implements AutoCloseable {
      */
     public StorageResult execute(String sql) {
         fallbackReason = null;
-        String normalized = normalize(sql);
+        // 每条语句先清空上一条的拼写提示，防止语法失败提前返回时旧提示跨语句残留
+        spellWarnings = List.of();
+        // 规范化：去首尾空白；分号必填，缺失报 SYNTAX_ERROR；去分号后交给 Parser
+        String trimmed = sql.trim();
+        if (trimmed.isEmpty()) {
+            return StorageResult.error("EMPTY_SQL", "SQL 语句为空");
+        }
+        if (!trimmed.endsWith(";")) {
+            return StorageResult.error("SYNTAX_ERROR", "语句必须以分号 ; 结尾");
+        }
+        String normalized = trimmed.substring(0, trimmed.length() - 1).trim();
         if (normalized.isEmpty()) {
             return StorageResult.error("EMPTY_SQL", "SQL 语句为空");
         }
 
         // 阶段一：词法 + 语法解析（复用 A 组真实代码，含拼写自动纠错）
         ASTNode ast;
+        Lexer lexer = new Lexer(normalized);
         try {
-            Lexer lexer = new Lexer(normalized);
+            if (SqlDebug.ENABLED) {
+                SqlDebug.printTokens(normalized);
+            }
             ast = new Parser(lexer).parse();
-            spellWarnings = lexer.getSpellWarnings();
         } catch (SqxdlException e) {
+            // 语法错误前 Lexer 可能已产出本条的拼写纠正提示（如 SELEC * student），一并带出
+            spellWarnings = lexer.getSpellWarnings();
             return StorageResult.error("SYNTAX_ERROR", e.getMessage());
+        }
+        spellWarnings = lexer.getSpellWarnings();
+        if (SqlDebug.ENABLED) {
+            SqlDebug.printAst(ast);
         }
 
         // 阶段二：语义分析（复用 B 组真实校验，含列类型校验）
         try {
             new SemanticAnalyzer(catalog).analyze(ast);
+            if (SqlDebug.ENABLED) {
+                SqlDebug.printSemantic();
+            }
         } catch (RuntimeException e) {
             return StorageResult.error("SEMANTIC_ERROR", e.getMessage());
         }
@@ -227,10 +248,19 @@ public class SqlEngine implements AutoCloseable {
             tables.put(createStmt.getTableName(), new TableData(infos, new ArrayList<>()));
         }
 
-        // 阶段三：计划生成 + 执行（generate 含表达式优化，任何异常都以 ERROR 返回）
+        // 阶段三：计划生成 + 执行（generate = build + optimize，任何异常都以 ERROR 返回）
         PlanNode plan;
         try {
-            plan = new PlanGenerator(catalog).generate(ast);
+            PlanGenerator generator = new PlanGenerator(catalog);
+            if (SqlDebug.ENABLED) {
+                // DEBUG：分别展示优化前后的计划树，观察常量折叠与恒真过滤移除效果
+                PlanNode raw = generator.build(ast);
+                SqlDebug.printPlan(raw, "Plan 树（优化前）");
+                plan = generator.optimize(raw);
+                SqlDebug.printPlan(plan, "Plan 树（优化后）");
+            } else {
+                plan = generator.generate(ast);
+            }
         } catch (RuntimeException e) {
             return StorageResult.error("PLAN_ERROR", e.getMessage());
         }
@@ -253,14 +283,6 @@ public class SqlEngine implements AutoCloseable {
     }
 
     // ====================== 执行：真实存储 / 模拟回退 ======================
-
-    /** 规范化输入：去首尾空白与末尾分号 */
-    private String normalize(String sql) {
-        String trimmed = sql.trim();
-        return trimmed.endsWith(";")
-                ? trimmed.substring(0, trimmed.length() - 1).trim()
-                : trimmed;
-    }
 
     /** 存储核心缺失/超时视为不可用，需要回退模拟 */
     private boolean isStorageFailure(StorageResult result) {

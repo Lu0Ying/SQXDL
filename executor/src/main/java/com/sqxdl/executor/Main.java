@@ -118,6 +118,14 @@ public class Main {
             System.out.println("Bye!");
             return false;
         }
+        // debug 元命令：随时开关流水线 DEBUG 输出（等价于 -Dsqxdl.debug=true 的运行时版）
+        if (sql.equalsIgnoreCase("debug") || sql.equalsIgnoreCase(".debug")) {
+            SqlDebug.ENABLED = !SqlDebug.ENABLED;
+            System.out.println(SqlDebug.ENABLED
+                    ? "DEBUG 已开启：每条 SQL 将打印 Token 流 / AST / 语义检查 / 优化前后 Plan 树"
+                    : "DEBUG 已关闭");
+            return true;
+        }
         if (sql.equalsIgnoreCase("history")) {
             if (history.size() == 0) {
                 System.out.println("(暂无历史)");

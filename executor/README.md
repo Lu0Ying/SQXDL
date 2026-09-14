@@ -123,25 +123,27 @@ SwingDemo (GUI) ─────────┘                     │
 
 ## 4. 支持的 SQL 输入
 
+**每条语句必须以分号 `;` 结尾**，缺失时返回 `SYNTAX_ERROR`。
+
 ```sql
-CREATE TABLE student (id INT, name VARCHAR, gpa DOUBLE)   -- 建表（INT/VARCHAR/DOUBLE）
-INSERT INTO student VALUES (1, 'Alice', 92.5)             -- 插入
-SELECT * FROM student                                    -- 全表查询
-SELECT name, gpa FROM student WHERE gpa > 90              -- 投影 + 条件
-SELECT * FROM student WHERE NOT age > 20 AND id < 5       -- 逻辑组合（&&/|| 等价）
-SELECT * FROM student WHERE gpa + 1 > 90                  -- 条件内算术*
-UPDATE student SET gpa = 95.0 WHERE id = 1                -- 更新（可省 WHERE，SET 值须为常量）
-DELETE FROM student WHERE id = 2                          -- 删除（可省 WHERE）
-SELECT name, gpa FROM student WHERE gpa > 90 ORDER BY gpa DESC   -- 排序（多键可逗号续写）
-SELECT grade, COUNT(*) FROM student GROUP BY grade        -- 分组计数（每组输出一行）
-SELECT COUNT(*) FROM student                              -- 全表计数（无 GROUP BY）
-SELECT name, title FROM student JOIN course ON id = cid   -- 内连接（可链式多表）
-SHOW TABLES                                              -- 列出全部表
-SHOW TABLE student                                       -- 查看表结构（列名 + 类型）
-DROP TABLE student                                       -- 删表（同时清理目录与数据）
+CREATE TABLE student (id INT, name VARCHAR, gpa DOUBLE);   -- 建表（INT/VARCHAR/DOUBLE）
+INSERT INTO student VALUES (1, 'Alice', 92.5);             -- 插入
+SELECT * FROM student;                                     -- 全表查询
+SELECT name, gpa FROM student WHERE gpa > 90;              -- 投影 + 条件
+SELECT * FROM student WHERE NOT age > 20 AND id < 5;       -- 逻辑组合（&&/|| 等价）
+SELECT * FROM student WHERE gpa + 1 > 90;                  -- 条件内算术*
+UPDATE student SET gpa = 95.0 WHERE id = 1;                -- 更新（可省 WHERE，SET 值须为常量）
+DELETE FROM student WHERE id = 2;                          -- 删除（可省 WHERE）
+SELECT name, gpa FROM student WHERE gpa > 90 ORDER BY gpa DESC;   -- 排序（多键可逗号续写）
+SELECT grade, COUNT(*) FROM student GROUP BY grade;        -- 分组计数（每组输出一行）
+SELECT COUNT(*) FROM student;                              -- 全表计数（无 GROUP BY）
+SELECT name, title FROM student JOIN course ON id = cid;   -- 内连接（可链式多表）
+SHOW TABLES;                                               -- 列出全部表
+SHOW TABLE student;                                        -- 查看表结构（列名 + 类型）
+DROP TABLE student;                                        -- 删表（同时清理目录与数据）
 ```
 
-- `exit` 退出（不区分大小写），结尾分号可选，空行跳过；
+- `exit` 退出（不区分大小写），空行跳过；
 - 拼写相近的关键字给出纠错提示（如 `SELEC` → `SELECT`）；
 - 执行前自动做语义校验：表/列存在性、INSERT 值个数、值类型与列类型兼容性
   （INT 与 DOUBLE 数值互通，字符串不能进数值列）。
@@ -187,7 +189,9 @@ Windows 分隔符为 `;`，Linux/macOS 为 `:`。也可直接在 IDEA 中运行
 `Main.main()` / `SwingDemo.main()`（依赖由 Maven 自动解析）。若不经 Maven、
 用 `javac/java` 直接编译运行 CLI，需把 JLine 三个 jar
 （`jline`、`jline-terminal-jna`、`jna`）加入 `-cp`。需要指定存储核心位置时加
-`-Dsqxdl.storage.exe=<exe 绝对路径>`。
+`-Dsqxdl.storage.exe=<exe 绝对路径>`。需要观察流水线中间结果（Token 流、
+AST 树、语义检查、优化前后 Plan 树）时，启动时加 `-Dsqxdl.debug=true`，或在
+REPL 中随时输入 `debug`（或 `.debug`）切换，再输入一次即关闭。
 
 ---
 
