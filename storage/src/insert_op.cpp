@@ -1,12 +1,14 @@
 #include "insert_op.h"
 
 #include "core/database.h"
-#include "core/storage_error.h"
 #include "core/row.h"
+#include "core/row_store.h"
+#include "core/storage_error.h"
 #include "core/table.h"
 
 // 插入一行：columns 可省略（按建表顺序对应 values），
-// 提供时按列名把 values 映射到对应列，未提及的列置 NULL；成功后落盘
+// 提供时按列名把 values 映射到对应列，未提及的列置 NULL；
+// 行以页内元组形式增量追加到该表数据页链，不做整表重写，成功后落盘
 nlohmann::json execute_insert(const nlohmann::json &plan)
 {
     try
@@ -16,7 +18,8 @@ nlohmann::json execute_insert(const nlohmann::json &plan)
         {
             throw StorageError("INVALID_PLAN", "Missing or invalid string field: table");
         }
-        Table &table = Database::instance().get_table(plan.at("table").get<std::string>());
+        const std::string table_name = plan.at("table").get<std::string>();
+        const Table &table = Database::instance().get_table(table_name);
 
         if (!plan.contains("values") || !plan.at("values").is_array())
         {
@@ -48,8 +51,15 @@ nlohmann::json execute_insert(const nlohmann::json &plan)
             }
             row = std::move(full_row);
         }
+        if (row.size() != table.columns().size())
+        {
+            throw StorageError("INTERNAL_ERROR",
+                               "Insert value count " + std::to_string(row.size()) +
+                                   " does not match column count " +
+                                   std::to_string(table.columns().size()));
+        }
 
-        table.append_row(std::move(row));
+        Database::instance().row_store().insert_row(table_name, row);
         Database::instance().flush();
     }
     catch (const StorageError &e)

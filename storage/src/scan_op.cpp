@@ -1,37 +1,18 @@
 #include "scan_op.h"
 
-#include "core/database.h"
-#include "core/storage_error.h"
-#include "core/table.h"
+#include <memory>
 
-// 全表扫描（查询树叶子节点）：返回整表数据（结果集，列 = 表列、行 = 表行）
+#include "core/storage_error.h"
+#include "row_source.h"
+
+// 全表扫描（查询树叶子节点）：按页流式读取整表（结果集，列 = 表列、行 = 表行）。
+// 行数据不整表物化，逐页从缓冲池取得，内存占用由页缓存页数决定
 nlohmann::json execute_scan(const nlohmann::json &plan)
 {
     try
     {
-        if (!plan.contains("table") || !plan.at("table").is_string() ||
-            plan.at("table").get<std::string>().empty())
-        {
-            throw StorageError("INVALID_PLAN", "Missing or invalid string field: table");
-        }
-        const Table &table = Database::instance().get_table(plan.at("table").get<std::string>());
-
-        nlohmann::json columns = nlohmann::json::array();
-        for (const auto &column : table.columns())
-        {
-            columns.push_back(column.name);
-        }
-        nlohmann::json rows = nlohmann::json::array();
-        for (const auto &row : table.rows())
-        {
-            rows.push_back(row.to_json());
-        }
-
-        return {
-            {"success", true},
-            {"type", "resultset"},
-            {"columns", std::move(columns)},
-            {"rows", std::move(rows)}};
+        std::unique_ptr<RowSource> source = build_row_source(plan);
+        return drain_to_resultset(*source);
     }
     catch (const StorageError &e)
     {

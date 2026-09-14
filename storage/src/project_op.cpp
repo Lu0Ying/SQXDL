@@ -1,12 +1,12 @@
 #include "project_op.h"
 
-#include <vector>
+#include <memory>
 
 #include "core/storage_error.h"
-#include "query_op.h"
+#include "row_source.h"
 
-// 投影指定列：递归执行 child 得到数据集，按 columns 选取并重排列；
-// columns 中列不存在报 COLUMN_NOT_FOUND，子节点出错时原样传播其错误
+// 投影指定列（对应 SELECT 列清单）：在 child 行源上按 columns 抽选并重排列；
+// columns 中列不存在报 COLUMN_NOT_FOUND。逐行投影，不物化 child 全量结果
 nlohmann::json execute_project(const nlohmann::json &plan)
 {
     try
@@ -33,61 +33,8 @@ nlohmann::json execute_project(const nlohmann::json &plan)
             }
         }
 
-        nlohmann::json child = execute_query_node(plan.at("child"));
-        if (!child.is_object() || !child.value("success", false))
-        {
-            return child; // 传播 child 的错误结果
-        }
-        if (child.value("type", "") != "resultset" || !child.contains("columns") ||
-            !child.contains("rows") || !child.at("columns").is_array() ||
-            !child.at("rows").is_array())
-        {
-            throw StorageError("INVALID_PLAN", "project child did not return a valid result set");
-        }
-
-        // 定位每一被投影列在 child 数据集中的下标
-        const nlohmann::json &child_columns = child.at("columns");
-        std::vector<size_t> indices;
-        indices.reserve(columns.size());
-        for (const auto &column : columns)
-        {
-            const std::string name = column.get<std::string>();
-            size_t index = child_columns.size();
-            for (size_t i = 0; i < child_columns.size(); ++i)
-            {
-                if (child_columns[i].is_string() && child_columns[i].get<std::string>() == name)
-                {
-                    index = i;
-                    break;
-                }
-            }
-            if (index == child_columns.size())
-            {
-                throw StorageError("COLUMN_NOT_FOUND", "Column " + name + " not found");
-            }
-            indices.push_back(index);
-        }
-
-        nlohmann::json projected = nlohmann::json::array();
-        for (const auto &row_json : child.at("rows"))
-        {
-            if (!row_json.is_array() || row_json.size() != child_columns.size())
-            {
-                throw StorageError("INTERNAL_ERROR", "Result set rows do not match column definitions");
-            }
-            nlohmann::json row = nlohmann::json::array();
-            for (const size_t index : indices)
-            {
-                row.push_back(row_json.at(index));
-            }
-            projected.push_back(std::move(row));
-        }
-
-        return {
-            {"success", true},
-            {"type", "resultset"},
-            {"columns", columns},
-            {"rows", std::move(projected)}};
+        std::unique_ptr<RowSource> source = build_row_source(plan);
+        return drain_to_resultset(*source);
     }
     catch (const StorageError &e)
     {
