@@ -990,9 +990,9 @@ class SemanticAnalyzerTest {
 
     @Test
     void sum_nonExistentColumn_throwsError() {
-        // SELECT SUM(score) FROM student（score 列不存在）
+        // SELECT SUM(gpa) FROM student（gpa 列不存在）
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
-                1, 1, "student", Arrays.asList("SUM(score)"), null,
+                1, 1, "student", Arrays.asList("SUM(gpa)"), null,
                 List.of(), List.of(), List.of());
         assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
     }
