@@ -123,7 +123,8 @@ SwingDemo (GUI) ─────────┘                     │
 
 ## 4. 支持的 SQL 输入
 
-**每条语句必须以分号 `;` 结尾**，缺失时返回 `SYNTAX_ERROR`。
+**每条语句必须以分号 `;` 结尾**，缺失时返回 `SYNTAX_ERROR`。分号判定会先剥离
+注释（`--` 行注释与 `/* ... */` 块注释）：分号后可以跟注释，注释里出现的分号不算数。
 
 ```sql
 CREATE TABLE student (id INT, name VARCHAR, gpa DOUBLE);   -- 建表（INT/VARCHAR/DOUBLE）

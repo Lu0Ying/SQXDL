@@ -199,17 +199,26 @@ public class SqlEngine implements AutoCloseable {
         fallbackReason = null;
         // 每条语句先清空上一条的拼写提示，防止语法失败提前返回时旧提示跨语句残留
         spellWarnings = List.of();
-        // 规范化：去首尾空白；分号必填，缺失报 SYNTAX_ERROR；去分号后交给 Parser
+        // 规范化：去首尾空白；分号必填（判定与去分号前先剥离注释，注释里出现分号不算数）
         String trimmed = sql.trim();
         if (trimmed.isEmpty()) {
             return StorageResult.error("EMPTY_SQL", "SQL 语句为空");
         }
-        if (!trimmed.endsWith(";")) {
-            return StorageResult.error("SYNTAX_ERROR", "语句必须以分号 ; 结尾");
-        }
-        String normalized = trimmed.substring(0, trimmed.length() - 1).trim();
-        if (normalized.isEmpty()) {
-            return StorageResult.error("EMPTY_SQL", "SQL 语句为空");
+        String stripped = stripComments(trimmed);
+        String normalized;
+        if (stripped == null) {
+            // 未闭合的字符串/块注释：跳过分号校验，交由 Lexer 报出带行列位置的精确错误
+            normalized = trimmed;
+        } else {
+            // 剥离后需 trim：行注释前的空格会成为剥离文本的结尾（"...; -- 注释" → "...; "）
+            stripped = stripped.trim();
+            if (!stripped.endsWith(";")) {
+                return StorageResult.error("SYNTAX_ERROR", "语句必须以分号 ; 结尾");
+            }
+            normalized = stripped.substring(0, stripped.length() - 1).trim();
+            if (normalized.isEmpty()) {
+                return StorageResult.error("EMPTY_SQL", "SQL 语句为空");
+            }
         }
 
         // 阶段一：词法 + 语法解析（复用 A 组真实代码，含拼写自动纠错）
@@ -283,6 +292,56 @@ public class SqlEngine implements AutoCloseable {
     }
 
     // ====================== 执行：真实存储 / 模拟回退 ======================
+
+    /**
+     * 剥离注释，仅用于分号判定与去分号：行注释（-- 起始至行尾）与块注释（斜杠星起始、可跨行）。
+     * 与 Lexer 行为对齐：字符串字面量内的内容不视为注释；行注释丢弃但保留换行以维持行号；
+     * 块注释替换为一个空格占位。检测到未闭合的字符串或块注释时返回 null，
+     * 调用方跳过分号校验并保留原文，交由 Lexer 报出带行列位置的精确错误。
+     */
+    private static String stripComments(String sql) {
+        StringBuilder sb = new StringBuilder(sql.length());
+        boolean inString = false;
+        for (int i = 0; i < sql.length(); i++) {
+            char c = sql.charAt(i);
+            if (inString) {
+                sb.append(c);
+                if (c == '\'') {
+                    if (i + 1 < sql.length() && sql.charAt(i + 1) == '\'') {
+                        // '' 转义：仍处于字符串内
+                        sb.append('\'');
+                        i++;
+                    } else {
+                        inString = false;
+                    }
+                }
+                continue;
+            }
+            if (c == '\'') {
+                inString = true;
+                sb.append(c);
+            } else if (c == '-' && i + 1 < sql.length() && sql.charAt(i + 1) == '-') {
+                // 行注释：丢弃到行尾（换行符保留，保证错误提示的行号不变）
+                while (i < sql.length() && sql.charAt(i) != '\n') {
+                    i++;
+                }
+                if (i < sql.length()) {
+                    sb.append('\n');
+                }
+            } else if (c == '/' && i + 1 < sql.length() && sql.charAt(i + 1) == '*') {
+                // 块注释：整体替换为一个空格，避免相邻 token 粘连
+                int end = sql.indexOf("*/", i + 2);
+                if (end < 0) {
+                    return null;
+                }
+                sb.append(' ');
+                i = end + 1;
+            } else {
+                sb.append(c);
+            }
+        }
+        return inString ? null : sb.toString();
+    }
 
     /** 存储核心缺失/超时视为不可用，需要回退模拟 */
     private boolean isStorageFailure(StorageResult result) {
