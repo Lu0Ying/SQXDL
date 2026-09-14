@@ -157,7 +157,14 @@ public class PlanGenerator {
                 // 主表 onCondition 约定为 null
                 onConditions.add(i == 0 ? null : optimizeCondition(joins.get(i - 1).getOnCond()));
             }
-            plan = new PlanNode.JoinPlan(children, onConditions);
+            // 为每个 JOIN 子节点选择连接算法
+            List<PlanNode.JoinAlgorithm> algorithms = new ArrayList<>();
+            algorithms.add(PlanNode.JoinAlgorithm.NESTED_LOOP);  // 左表无 ON
+            for (int i = 1; i < tableNames.size(); i++) {
+                ASTNode onCond = optimizeCondition(joins.get(i - 1).getOnCond());
+                algorithms.add(chooseJoinAlgorithm(onCond));
+            }
+            plan = new PlanNode.JoinPlan(children, onConditions, algorithms);
 
             // 跨表谓词留在 Join 之上
             if (!joinFilters.isEmpty()) {
@@ -244,6 +251,42 @@ public class PlanGenerator {
                     "AND", result, exprs.get(i));
         }
         return result;
+    }
+
+    // ========== JOIN 算法选择 ==========
+
+    /**
+     * 根据 ON 条件形式选择连接算法。
+     * 等值连接（=）→ HASH；非等值或无条件 → NESTED_LOOP。
+     */
+    private PlanNode.JoinAlgorithm chooseJoinAlgorithm(ASTNode onCond) {
+        if (onCond == null) {
+            return PlanNode.JoinAlgorithm.NESTED_LOOP;  // 笛卡尔积
+        }
+        if (isEquiJoin(onCond)) {
+            return PlanNode.JoinAlgorithm.HASH;
+        }
+        return PlanNode.JoinAlgorithm.NESTED_LOOP;
+    }
+
+    /**
+     * 判断是否为等值连接：ON 条件为 a.col = b.col 形式。
+     * 支持合取分解：a=x AND b=y 全是等值 → 仍可 HashJoin。
+     * 含 OR 或非等值比较 → false。
+     */
+    private boolean isEquiJoin(ASTNode onCond) {
+        if (onCond instanceof ASTNode.BinaryExpr bin) {
+            if ("=".equals(bin.getOp())
+                    && bin.getLeft() instanceof ASTNode.IdentifierExpr
+                    && bin.getRight() instanceof ASTNode.IdentifierExpr) {
+                return true;
+            }
+            // AND 连接的多个等值条件也是 HashJoin
+            if ("AND".equals(bin.getOp())) {
+                return isEquiJoin(bin.getLeft()) && isEquiJoin(bin.getRight());
+            }
+        }
+        return false;
     }
 
     /**
@@ -760,7 +803,7 @@ public class PlanGenerator {
             sb.append("\"op\":\"dropTable\",\"table\":");
             writeJsonString(sb, p.getTableName());
         } else if (plan instanceof PlanNode.JoinPlan p) {
-            // JOIN：{"op":"join","children":[子节点...],"on":[条件...]}
+            // JOIN：{"op":"join","children":[子节点...],"on":[条件...],"algorithms":[算法...]}
             // on[i] 为 null 表示该子节点为左表，无 ON 条件
             sb.append("\"op\":\"join\",\"children\":[");
             for (int i = 0; i < p.getChildren().size(); i++) {
@@ -778,6 +821,14 @@ public class PlanGenerator {
                 }
             }
             sb.append("]");
+            if (p.getAlgorithms() != null) {
+                sb.append(",\"algorithms\":[");
+                for (int i = 0; i < p.getAlgorithms().size(); i++) {
+                    if (i > 0) sb.append(",");
+                    sb.append("\"").append(p.getAlgorithms().get(i).name()).append("\"");
+                }
+                sb.append("]");
+            }
         } else if (plan instanceof PlanNode.GroupByPlan p) {
             sb.append("\"op\":\"groupBy\",\"columns\":");
             writeStringList(sb, p.getGroupByColumns());

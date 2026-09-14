@@ -1941,4 +1941,217 @@ class PlanGeneratorTest {
         assertTrue(output.contains("student"));
         assertTrue(output.contains("name"));  // 列名出现在属性中
     }
+
+    // ========== JOIN 算法选择 ==========
+
+    @Test
+    void joinAlgorithm_equiJoin_usesHash() {
+        // ON id = cid → 等值连接 → HASH
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), null,
+                List.of(join), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        PlanNode.JoinPlan jp = (PlanNode.JoinPlan) ((PlanNode.ProjectPlan) plan).getChild();
+        List<PlanNode.JoinAlgorithm> algos = jp.getAlgorithms();
+        assertNotNull(algos);
+        assertEquals(2, algos.size());
+        // 左表 NESTED_LOOP，右表 HASH
+        assertEquals(PlanNode.JoinAlgorithm.NESTED_LOOP, algos.get(0));
+        assertEquals(PlanNode.JoinAlgorithm.HASH, algos.get(1));
+    }
+
+    @Test
+    void joinAlgorithm_nonEquiJoin_usesNestedLoop() {
+        // ON student.age > course.credit → 非等值 → NESTED_LOOP
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, ">",
+                new ASTNode.IdentifierExpr(1, 28, "age"),
+                new ASTNode.IdentifierExpr(1, 35, "cname"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), null,
+                List.of(join), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        PlanNode.JoinPlan jp = (PlanNode.JoinPlan) ((PlanNode.ProjectPlan) plan).getChild();
+        List<PlanNode.JoinAlgorithm> algos = jp.getAlgorithms();
+        assertNotNull(algos);
+        assertEquals(PlanNode.JoinAlgorithm.NESTED_LOOP, algos.get(0));
+        assertEquals(PlanNode.JoinAlgorithm.NESTED_LOOP, algos.get(1));
+    }
+
+    @Test
+    void joinAlgorithm_multipleEquiJoinConjuncts_usesHash() {
+        // ON id = cid AND name = cname → 全等值合取 → HASH
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr eq1 = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.BinaryExpr eq2 = new ASTNode.BinaryExpr(1, 50, "=",
+                new ASTNode.IdentifierExpr(1, 48, "name"),
+                new ASTNode.IdentifierExpr(1, 55, "cname"));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 45, "AND", eq1, eq2);
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), null,
+                List.of(join), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        PlanNode.JoinPlan jp = (PlanNode.JoinPlan) ((PlanNode.ProjectPlan) plan).getChild();
+        assertEquals(PlanNode.JoinAlgorithm.HASH, jp.getAlgorithms().get(1));
+    }
+
+    @Test
+    void joinAlgorithm_mixedEquiAndNonEqui_usesNestedLoop() {
+        // ON id = cid OR age > cname → 含非等值 → NESTED_LOOP
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr eq = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.BinaryExpr ne = new ASTNode.BinaryExpr(1, 50, ">",
+                new ASTNode.IdentifierExpr(1, 48, "age"),
+                new ASTNode.IdentifierExpr(1, 55, "cname"));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 45, "OR", eq, ne);
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), null,
+                List.of(join), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        PlanNode.JoinPlan jp = (PlanNode.JoinPlan) ((PlanNode.ProjectPlan) plan).getChild();
+        assertEquals(PlanNode.JoinAlgorithm.NESTED_LOOP, jp.getAlgorithms().get(1));
+    }
+
+    @Test
+    void joinAlgorithm_threeTableJoin_mixedAlgorithms() {
+        // student JOIN course ON id=cid (HASH) JOIN enrollment ON id=eid (HASH)
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        catalog.createTableWithTypes("enrollment", Arrays.asList(
+                new CatalogImpl.ColumnInfo("eid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("grade", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr on1 = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.BinaryExpr on2 = new ASTNode.BinaryExpr(1, 60, "=",
+                new ASTNode.IdentifierExpr(1, 58, "id"),
+                new ASTNode.IdentifierExpr(1, 65, "eid"));
+        ASTNode.SelectStmt.JoinClause join1 = new ASTNode.SelectStmt.JoinClause("course", on1);
+        ASTNode.SelectStmt.JoinClause join2 = new ASTNode.SelectStmt.JoinClause("enrollment", on2);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), null,
+                List.of(join1, join2), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        PlanNode.JoinPlan jp = (PlanNode.JoinPlan) ((PlanNode.ProjectPlan) plan).getChild();
+        List<PlanNode.JoinAlgorithm> algos = jp.getAlgorithms();
+        assertNotNull(algos);
+        assertEquals(3, algos.size());
+        assertEquals(PlanNode.JoinAlgorithm.NESTED_LOOP, algos.get(0));  // 左表
+        assertEquals(PlanNode.JoinAlgorithm.HASH, algos.get(1));          // course
+        assertEquals(PlanNode.JoinAlgorithm.HASH, algos.get(2));          // enrollment
+    }
+
+    @Test
+    void joinAlgorithm_threeTableJoin_differentAlgorithms() {
+        // student JOIN course ON id=cid (HASH) JOIN enrollment ON age > grade (NESTED_LOOP)
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        catalog.createTableWithTypes("enrollment", Arrays.asList(
+                new CatalogImpl.ColumnInfo("eid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("grade", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr on1 = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.BinaryExpr on2 = new ASTNode.BinaryExpr(1, 60, ">",
+                new ASTNode.IdentifierExpr(1, 58, "age"),
+                new ASTNode.IdentifierExpr(1, 65, "grade"));
+        ASTNode.SelectStmt.JoinClause join1 = new ASTNode.SelectStmt.JoinClause("course", on1);
+        ASTNode.SelectStmt.JoinClause join2 = new ASTNode.SelectStmt.JoinClause("enrollment", on2);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), null,
+                List.of(join1, join2), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        PlanNode.JoinPlan jp = (PlanNode.JoinPlan) ((PlanNode.ProjectPlan) plan).getChild();
+        List<PlanNode.JoinAlgorithm> algos = jp.getAlgorithms();
+        assertEquals(PlanNode.JoinAlgorithm.NESTED_LOOP, algos.get(0));
+        assertEquals(PlanNode.JoinAlgorithm.HASH, algos.get(1));
+        assertEquals(PlanNode.JoinAlgorithm.NESTED_LOOP, algos.get(2));
+    }
+
+    @Test
+    void toJson_joinIncludesAlgorithms() {
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), null,
+                List.of(join), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+        String json = generator.toJson(plan);
+
+        assertTrue(json.contains("\"op\":\"join\""));
+        assertTrue(json.contains("\"algorithms\""));
+        assertTrue(json.contains("\"NESTED_LOOP\""));
+        assertTrue(json.contains("\"HASH\""));
+    }
+
+    @Test
+    void formatPlan_joinShowsAlgorithms() {
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "id"),
+                new ASTNode.IdentifierExpr(1, 35, "cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name"), null,
+                List.of(join), List.of(), List.of());
+        PlanNode plan = generator.generate(stmt);
+
+        String output = PlanNode.formatPlan(plan);
+        assertTrue(output.contains("JoinPlan"));
+        assertTrue(output.contains("algorithms"));
+        assertTrue(output.contains("HASH"));
+    }
 }

@@ -298,20 +298,37 @@ public abstract class PlanNode {
     }
 
     /**
+     * 连接算法类型：PlanGenerator 根据 ON 条件形式选择。
+     */
+    public enum JoinAlgorithm {
+        NESTED_LOOP,  // 嵌套循环：任意条件（非等值或笛卡尔积）
+        HASH,         // 哈希连接：等值连接（a.col = b.col）
+        MERGE         // 归并连接：等值+有序（暂未使用）
+    }
+
+    /**
      * 连接计划：对多个子计划做笛卡尔积后按 onConditions 过滤。
      * 对应 SQL 的 JOIN ... ON 子句。支持多表连接。
      * 左表为 child（第一个子节点），右表通过 children 列表追加。
      * onConditions 与 children 一一对应：children[i] 的连接条件为 onConditions[i]。
-     * 左表（第一个子节点）的 onCondition 约定为 null。
+     * algorithms 与 children 一一对应：algorithms[i] 为 children[i] 的连接算法。
+     * 左表（第一个子节点）的 onCondition 约定为 null，algorithm 约定为 NESTED_LOOP。
      */
     public static class JoinPlan extends PlanNode {
 
         private final List<PlanNode> children;
         private final List<ASTNode> onConditions;
+        private final List<JoinAlgorithm> algorithms;
 
         public JoinPlan(List<PlanNode> children, List<ASTNode> onConditions) {
+            this(children, onConditions, null);
+        }
+
+        public JoinPlan(List<PlanNode> children, List<ASTNode> onConditions,
+                        List<JoinAlgorithm> algorithms) {
             this.children = children;
             this.onConditions = onConditions;
+            this.algorithms = algorithms;
         }
 
         public List<PlanNode> getChildren() {
@@ -320,6 +337,10 @@ public abstract class PlanNode {
 
         public List<ASTNode> getOnConditions() {
             return onConditions;
+        }
+
+        public List<JoinAlgorithm> getAlgorithms() {
+            return algorithms;
         }
 
         /** 兼容单 child 访问：返回第一个子节点 */
@@ -518,6 +539,10 @@ public abstract class PlanNode {
                 onStrs.add(on == null ? "(左表)" : formatExpr(on));
             }
             detailLine(sb, depth, "on", onStrs);
+            // 连接算法列表
+            if (p.getAlgorithms() != null) {
+                detailLine(sb, depth, "algorithms", p.getAlgorithms());
+            }
         } else if (node instanceof GroupByPlan p) {
             detailLine(sb, depth, "columns", p.getGroupByColumns());
         } else if (node instanceof OrderByPlan p) {
