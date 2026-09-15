@@ -21,12 +21,44 @@ public class PerfTest {
     /** 200 字符固定 tag，让每行足够宽、页数足够多 */
     private static final String TAG = "TAGX".repeat(50);
 
-    /** 汇总行：操作 / 数据量 / 平均耗时 / 吞吐 */
-    private record BenchRow(String name, String scale, long millis, double opsPerSec) {
+    /** 汇总行：操作 / 数据量 / 平均耗时 / 吞吐，附每项的 8 段耗时分解（毫秒展示） */
+    private record BenchRow(String name, String scale, long millis, double opsPerSec, long[] phases) {
         void print() {
             System.out.printf(Locale.ROOT, "%-28s %10s %10d ms %12s%n",
                     name, scale, millis, opsPerSec > 0 ? String.format(Locale.ROOT, "%.0f 次/秒", opsPerSec) : "-");
+            if (phases == null) {
+                return;
+            }
+            System.out.printf(Locale.ROOT,
+                    "  └ 平均: 规范化%.2f | 词法语法%.2f | 语义%.2f | 计划%.2f",
+                    phases[0] / 1e6, phases[1] / 1e6, phases[2] / 1e6, phases[3] / 1e6);
+            if (phases[4] >= 0) {
+                System.out.printf(Locale.ROOT,
+                        " | 序列化%.2f | 发送%.2f | 核心执行+回传%.2f | 响应解析%.2f ms%n",
+                        phases[4] / 1e6, phases[5] / 1e6, phases[6] / 1e6, phases[7] / 1e6);
+            } else {
+                System.out.println(" | 本地模拟");
+            }
         }
+    }
+
+    /** 累计 8 段采样：各段独立平均（-1 表示该段本次未走存储路径，不计入） */
+    private static void accumulate(long[] sum, long[] count, long[] sample) {
+        for (int i = 0; i < 8; i++) {
+            if (sample[i] >= 0) {
+                sum[i] += sample[i];
+                count[i]++;
+            }
+        }
+    }
+
+    /** 计算各段平均值：无采样的段保持 -1 */
+    private static long[] averageOf(long[] sum, long[] count) {
+        long[] avg = new long[8];
+        for (int i = 0; i < 8; i++) {
+            avg[i] = count[i] > 0 ? sum[i] / count[i] : -1L;
+        }
+        return avg;
     }
 
     public static void main(String[] args) {
@@ -54,19 +86,23 @@ public class PerfTest {
         requireOk(create, "建表");
     }
 
-    /** 大输入：批量 INSERT 1000 行，统计总耗时与每行吞吐。 */
+    /** 大输入：批量 INSERT 1000 行，统计总耗时、每行吞吐与逐行 8 段耗时平均。 */
     private static void benchInsert(SqlEngine engine) {
         System.out.println("== 大输入 ==");
         long t0 = System.nanoTime();
+        long[] sum = new long[8];
+        long[] count = new long[8];
         for (int i = 1; i <= ROWS; i++) {
             StorageResult r = engine.execute(insertOf(i));
+            accumulate(sum, count, engine.lastTimingNanos());
             if (!r.getType().name().equals("ROWCOUNT")) {
                 System.out.println("⚠第 " + i + " 行插入失败: " + r.getErrorMessage());
                 return;
             }
         }
         long ms = elapsedMs(t0);
-        report(new BenchRow("批量 INSERT", ROWS + " 行", ms, ROWS * 1000.0 / Math.max(ms, 1)));
+        report(new BenchRow("批量 INSERT", ROWS + " 行", ms, ROWS * 1000.0 / Math.max(ms, 1),
+                averageOf(sum, count)));
         // 热身后续查找基准的页缓存（不含首次 IO）
         engine.execute("SELECT COUNT(*) FROM " + TABLE + ";");
     }
@@ -103,19 +139,23 @@ public class PerfTest {
                 + (String.valueOf(ROWS).equals(String.valueOf(countValue)) ? "（通过）" : "（⚠不等于 " + ROWS + "）"));
     }
 
-    /** 通用基准：执行 iterations 次（首冷不剔除，本进程已有热身），返回平均耗时行。 */
+    /** 通用基准：执行 iterations 次（首冷不剔除，本进程已有热身），返回平均耗时行并附 8 段分解。 */
     private static BenchRow bench(SqlEngine engine, String name, String scale,
                                   int iterations, java.util.function.Supplier<StorageResult> action) {
         long t0 = System.nanoTime();
+        long[] sum = new long[8];
+        long[] count = new long[8];
         for (int i = 0; i < iterations; i++) {
             StorageResult r = action.get();
+            accumulate(sum, count, engine.lastTimingNanos());
             if (r.getType() == StorageResult.Type.ERROR) {
                 System.out.println("⚠" + name + " 执行失败: " + r.getErrorMessage());
-                return new BenchRow(name + " (失败)", scale, -1, 0);
+                return new BenchRow(name + " (失败)", scale, -1, 0, null);
             }
         }
         long ms = elapsedMs(t0);
-        BenchRow row = new BenchRow(name, scale, ms / iterations, iterations * 1000.0 / Math.max(ms, 1));
+        BenchRow row = new BenchRow(name, scale, ms / iterations, iterations * 1000.0 / Math.max(ms, 1),
+                averageOf(sum, count));
         report(row);
         return row;
     }

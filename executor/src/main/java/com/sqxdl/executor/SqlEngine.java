@@ -320,12 +320,31 @@ public class SqlEngine implements AutoCloseable {
      * 误读上一次调用的残留采样。
      */
     private StorageResult finishTiming(PhaseTiming timing, long total0, StorageResult result) {
+        // 无论开关与否都记录最近一次分段耗时，供 PerfTest 等外部基准累计（开销可忽略）
+        long[] storagePhases = timing.storageUsed
+                ? new long[]{storageClient.lastSerializeNanos(), storageClient.lastSendNanos(),
+                        storageClient.lastWaitNanos(), storageClient.lastParseNanos()}
+                : new long[]{-1L, -1L, -1L, -1L};
+        lastTimingNanos = new long[]{timing.normalize, timing.parse, timing.semantic, timing.plan,
+                storagePhases[0], storagePhases[1], storagePhases[2], storagePhases[3]};
         if (SqlDebug.ENABLED) {
             SqlDebug.printTiming(result.getType().name(), System.nanoTime() - total0,
                     timing.normalize, timing.parse, timing.semantic, timing.plan, timing.storage,
                     timing.storageUsed ? storageClient : null);
         }
         return result;
+    }
+
+    /** 最近一次 execute 的分段耗时（纳秒）：规范化/词法+语法/语义/计划/序列化/发送/核心等待/响应解析；未走存储路径时后四段为 -1 */
+    private volatile long[] lastTimingNanos = new long[8];
+
+    /**
+     * 最近一次 {@link #execute} 的分段耗时采样，供基准测试累计平均。
+     * 返回 8 元素数组：[规范化, 词法+语法, 语义, 计划生成, 序列化, 发送, 核心执行+回传, 响应解析]，
+     * 单位纳秒；本次未走存储核心（LOCAL/回退/早期错误）时后四段为 -1。返回副本防外部修改。
+     */
+    public long[] lastTimingNanos() {
+        return lastTimingNanos.clone();
     }
 
     /** 单条语句的分段耗时采样（纳秒）；各段仅在 SqlDebug.ENABLED 时对外展示 */
