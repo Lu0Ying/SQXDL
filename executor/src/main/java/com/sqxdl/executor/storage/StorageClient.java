@@ -45,6 +45,28 @@ public class StorageClient {
         return thread;
     });
 
+    // ---- 最近一次调用的分段耗时（纳秒）。REPL/GUI 为单线程调用，无并发竞争 ----
+    /** 计划对象 -> JSON 文本的序列化耗时 */
+    private volatile long lastSerializeNanos;
+    /** 写入 stdin 并 flush 的发送耗时 */
+    private volatile long lastSendNanos;
+    /** 等待核心返回一行的耗时（含核心执行 + 回传 + 管道往返） */
+    private volatile long lastWaitNanos;
+    /** 结果 JSON 文本 -> StorageResult 的解析耗时 */
+    private volatile long lastParseNanos;
+
+    /** 最近一次调用的计划序列化耗时（纳秒） */
+    public long lastSerializeNanos() { return lastSerializeNanos; }
+
+    /** 最近一次调用的发送耗时（纳秒） */
+    public long lastSendNanos() { return lastSendNanos; }
+
+    /** 最近一次调用的核心等待耗时（纳秒） */
+    public long lastWaitNanos() { return lastWaitNanos; }
+
+    /** 最近一次调用的响应解析耗时（纳秒） */
+    public long lastParseNanos() { return lastParseNanos; }
+
     public StorageClient() {
         // 可通过 -Dsqxdl.storage.exe=<路径> 覆盖；默认取仓库约定位置
         String configured = System.getProperty("sqxdl.storage.exe");
@@ -55,7 +77,10 @@ public class StorageClient {
 
     /** 执行计划：序列化为物理计划 JSON 后经会话调用存储核心 */
     public StorageResult execute(PlanNode plan) {
-        return call(PhysicalPlanJson.serialize(plan));
+        long t0 = System.nanoTime();
+        String json = PhysicalPlanJson.serialize(plan);
+        lastSerializeNanos = System.nanoTime() - t0;
+        return call(json);
     }
 
     /** 直接以计划 JSON 调用存储核心（联调时可手工构造计划） */
@@ -69,10 +94,13 @@ public class StorageClient {
             Process current = ensureSession();
             // 计划 JSON 经标准输入按行传递：Windows 下命令行参数中的双引号
             // 会被 CRT 当定界符剥离，跨语言传 JSON 必须走 stdin
+            long t0 = System.nanoTime();
             current.getOutputStream().write((planJson + "\n").getBytes(StandardCharsets.UTF_8));
             current.getOutputStream().flush();
+            lastSendNanos = System.nanoTime() - t0;
 
             // 阻塞 readLine 交给单线程池执行，主线程限时等待，防止核心无响应卡死 REPL
+            t0 = System.nanoTime();
             Future<String> pendingLine = readerPool.submit(() -> stdout.readLine());
             String line;
             try {
@@ -85,12 +113,15 @@ public class StorageClient {
                 closeSession();
                 return StorageResult.error("STORAGE_UNAVAILABLE",
                         "读取存储核心输出失败: " + e.getCause().getMessage());
+            } finally {
+                lastWaitNanos = System.nanoTime() - t0;
             }
             if (line == null) {
                 // 核心进程已退出（EOF），关闭会话待下次重启
                 closeSession();
                 return StorageResult.error("STORAGE_UNAVAILABLE", "存储核心进程已退出");
             }
+            t0 = System.nanoTime();
             try {
                 return StorageResult.parse(line.trim());
             } catch (RuntimeException e) {
@@ -98,6 +129,8 @@ public class StorageClient {
                 closeSession();
                 return StorageResult.error("INVALID_RESPONSE",
                         "存储核心返回了无法解析的结果: " + line.trim());
+            } finally {
+                lastParseNanos = System.nanoTime() - t0;
             }
         } catch (IOException e) {
             closeSession();

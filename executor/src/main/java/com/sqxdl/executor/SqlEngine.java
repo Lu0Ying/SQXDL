@@ -196,13 +196,15 @@ public class SqlEngine implements AutoCloseable {
      * 仅应在 Swing EDT（GUI）或 REPL 单线程（CLI）中调用，内部数据无并发保护。
      */
     public StorageResult execute(String sql) {
+        PhaseTiming timing = new PhaseTiming();
+        long total0 = System.nanoTime();
         fallbackReason = null;
         // 每条语句先清空上一条的拼写提示，防止语法失败提前返回时旧提示跨语句残留
         spellWarnings = List.of();
         // 规范化：去首尾空白；分号必填（判定与去分号前先剥离注释，注释里出现分号不算数）
         String trimmed = sql.trim();
         if (trimmed.isEmpty()) {
-            return StorageResult.error("EMPTY_SQL", "SQL 语句为空");
+            return finishTiming(timing, total0, StorageResult.error("EMPTY_SQL", "SQL 语句为空"));
         }
         String stripped = stripComments(trimmed);
         String normalized;
@@ -213,16 +215,19 @@ public class SqlEngine implements AutoCloseable {
             // 剥离后需 trim：行注释前的空格会成为剥离文本的结尾（"...; -- 注释" → "...; "）
             stripped = stripped.trim();
             if (!stripped.endsWith(";")) {
-                return StorageResult.error("SYNTAX_ERROR", "语句必须以分号 ; 结尾");
+                return finishTiming(timing, total0,
+                        StorageResult.error("SYNTAX_ERROR", "语句必须以分号 ; 结尾"));
             }
             normalized = stripped.substring(0, stripped.length() - 1).trim();
             if (normalized.isEmpty()) {
-                return StorageResult.error("EMPTY_SQL", "SQL 语句为空");
+                return finishTiming(timing, total0, StorageResult.error("EMPTY_SQL", "SQL 语句为空"));
             }
         }
+        timing.normalize = System.nanoTime() - total0;
 
         // 阶段一：词法 + 语法解析（复用 A 组真实代码，含拼写自动纠错）
         ASTNode ast;
+        long phase0 = System.nanoTime();
         Lexer lexer = new Lexer(normalized);
         try {
             if (SqlDebug.ENABLED) {
@@ -232,22 +237,26 @@ public class SqlEngine implements AutoCloseable {
         } catch (SqxdlException e) {
             // 语法错误前 Lexer 可能已产出本条的拼写纠正提示（如 SELEC * student），一并带出
             spellWarnings = lexer.getSpellWarnings();
-            return StorageResult.error("SYNTAX_ERROR", e.getMessage());
+            return finishTiming(timing, total0, StorageResult.error("SYNTAX_ERROR", e.getMessage()));
         }
+        timing.parse = System.nanoTime() - phase0;
         spellWarnings = lexer.getSpellWarnings();
         if (SqlDebug.ENABLED) {
             SqlDebug.printAst(ast);
         }
 
         // 阶段二：语义分析（复用 B 组真实校验，含列类型校验）
+        phase0 = System.nanoTime();
         try {
             new SemanticAnalyzer(catalog).analyze(ast);
             if (SqlDebug.ENABLED) {
                 SqlDebug.printSemantic();
             }
         } catch (RuntimeException e) {
-            return StorageResult.error("SEMANTIC_ERROR", e.getMessage());
+            timing.semantic = System.nanoTime() - phase0;
+            return finishTiming(timing, total0, StorageResult.error("SEMANTIC_ERROR", e.getMessage()));
         }
+        timing.semantic = System.nanoTime() - phase0;
 
         // 建表元数据在此统一登记（AUTO/LOCAL 共用），保证后续语句的语义校验可见新表；
         // 数据写入由存储核心（AUTO）或内置模拟层（LOCAL/回退）负责
@@ -258,6 +267,7 @@ public class SqlEngine implements AutoCloseable {
         }
 
         // 阶段三：计划生成 + 执行（generate = build + optimize，任何异常都以 ERROR 返回）
+        phase0 = System.nanoTime();
         PlanNode plan;
         try {
             PlanGenerator generator = new PlanGenerator(catalog);
@@ -271,24 +281,61 @@ public class SqlEngine implements AutoCloseable {
                 plan = generator.generate(ast);
             }
         } catch (RuntimeException e) {
-            return StorageResult.error("PLAN_ERROR", e.getMessage());
+            timing.plan = System.nanoTime() - phase0;
+            return finishTiming(timing, total0, StorageResult.error("PLAN_ERROR", e.getMessage()));
         }
+        timing.plan = System.nanoTime() - phase0;
+
         // LOCAL 模式直接本地模拟（数据保存在 JVM，演示可跨语句看到变化）
         if (mode == Mode.LOCAL) {
-            return simulate(ast);
+            phase0 = System.nanoTime();
+            StorageResult localResult = simulate(ast);
+            timing.storage = System.nanoTime() - phase0;
+            return finishTiming(timing, total0, localResult);
         }
         // AUTO 模式走真实存储核心，不可用时回退模拟
         StorageResult result;
+        phase0 = System.nanoTime();
+        timing.storageUsed = true; // 本次确实调用了存储核心，耗时分解可展示存储侧细分
         try {
             result = executePlan(plan);
         } catch (RuntimeException e) {
-            return StorageResult.error("PLAN_ERROR", e.getMessage());
+            timing.storage = System.nanoTime() - phase0;
+            return finishTiming(timing, total0, StorageResult.error("PLAN_ERROR", e.getMessage()));
         }
+        timing.storage = System.nanoTime() - phase0;
         if (!isStorageFailure(result)) {
-            return result;
+            return finishTiming(timing, total0, result);
         }
         fallbackReason = "存储核心不可用，已使用内置示例数据模拟执行";
-        return simulate(ast);
+        phase0 = System.nanoTime();
+        StorageResult simulated = simulate(ast);
+        timing.storage += System.nanoTime() - phase0;
+        return finishTiming(timing, total0, simulated);
+    }
+
+    /**
+     * DEBUG 开启时打印本条语句的端到端耗时分解（性能检查点）；
+     * 存储细分仅在本次确实调用了存储核心（AUTO 路径）时展示，避免错误路径
+     * 误读上一次调用的残留采样。
+     */
+    private StorageResult finishTiming(PhaseTiming timing, long total0, StorageResult result) {
+        if (SqlDebug.ENABLED) {
+            SqlDebug.printTiming(result.getType().name(), System.nanoTime() - total0,
+                    timing.normalize, timing.parse, timing.semantic, timing.plan, timing.storage,
+                    timing.storageUsed ? storageClient : null);
+        }
+        return result;
+    }
+
+    /** 单条语句的分段耗时采样（纳秒）；各段仅在 SqlDebug.ENABLED 时对外展示 */
+    private static final class PhaseTiming {
+        long normalize;
+        long parse;
+        long semantic;
+        long plan;
+        long storage;
+        boolean storageUsed;
     }
 
     // ====================== 执行：真实存储 / 模拟回退 ======================
