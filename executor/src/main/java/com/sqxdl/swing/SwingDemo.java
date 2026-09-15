@@ -178,7 +178,7 @@ public class SwingDemo extends JFrame {
 
     // ====================== 业务逻辑 ======================
 
-    /** 把输入框的 Enter 绑定为执行（与 CLI 一致），Shift+Enter 保留换行。 */
+    /** 把输入框的 Enter 绑定为执行（与 CLI 一致），Shift+Enter 显式绑回换行。 */
     private void bindEnterToExecute() {
         InputMap inputMap = sqlArea.getInputMap(JComponent.WHEN_FOCUSED);
         ActionMap actionMap = sqlArea.getActionMap();
@@ -189,6 +189,9 @@ public class SwingDemo extends JFrame {
                 executeFromInput();
             }
         });
+        // 覆盖 ENTER 后 Swing 默认键映射里 Shift+Enter 不再挂换行动作，需显式绑回
+        inputMap.put(KeyStroke.getKeyStroke("shift ENTER"),
+                actionMap.get(DefaultEditorKit.insertBreakAction));
     }
 
     /**
