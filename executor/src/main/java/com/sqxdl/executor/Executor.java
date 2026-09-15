@@ -5,9 +5,11 @@ import com.sqxdl.executor.storage.StorageResult;
 import java.util.List;
 
 /**
- * 执行器（D 组）。
- * 职责：按结果类型（数据集/行数/错误）格式化输出，供 CLI 展示执行结果。
- * 只做展示，不感知存储协议与执行细节（执行统一由 {@link SqlEngine} 门面完成）。
+ * 结果渲染器（D 组）—— 名为执行器，实际只负责"结果的格式化展示"。
+ * <p>按 {@link StorageResult} 的类型输出：RESULTSET 打印对齐的文本表格
+ * （列宽自适应），ROWCOUNT 打印影响行数，ERROR 打印错误码与消息。
+ * 执行本身统一由 {@link SqlEngine} 门面完成，本类不感知存储协议与
+ * 执行细节，CLI（Main）与 GUI 的文本日志都可直接复用。
  */
 public class Executor {
 

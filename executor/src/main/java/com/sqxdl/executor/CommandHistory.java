@@ -6,7 +6,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 输入历史（CLI 与 GUI 共用）。
+ * 输入历史（D 组，CLI 与 GUI 共用）。
  * GUI 用它配合 ↑/↓ 键翻阅历史输入；CLI 交互模式的方向键由 JLine 提供，
  * 而管道/重定向输入（无 TTY）无法使用方向键，用 bash 风格的
  * history 命令与 !! / !N 重新执行等效替代。

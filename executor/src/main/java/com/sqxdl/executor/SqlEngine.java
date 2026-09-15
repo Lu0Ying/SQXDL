@@ -21,10 +21,33 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * SQL 执行引擎：CLI（Main）与 GUI（SwingDemo）共用的执行门面。
- * 流水线：SQL 文本 -> Lexer/Parser（A 组）-> 语义分析 -> 计划生成 -> 执行。
- * 存储核心（storage_core.exe）不可用时回退内置示例数据模拟执行，
- * 保证 Demo 脱离 C++ 存储程序也能完整演示。
+ * SQL 执行引擎 —— D 组（executor 模块）核心，CLI（Main）与 GUI（SwingDemo）共用的执行门面。
+ * <p>完整流水线及各组分工：
+ * <pre>
+ *   SQL 文本
+ *     │ 规范化（剥注释 / 分号校验，D 组）
+ *     ▼
+ *   A 组 parser 模块：Lexer 分词 + Parser 建语法树（含拼写自动纠错）
+ *     ▼
+ *   B 组 semantic 模块：SemanticAnalyzer 语义校验（表/列存在性、类型、列数）
+ *     ▼
+ *   B 组 semantic 模块：PlanGenerator 生成并优化执行计划（PlanNode 树）
+ *     ▼
+ *   D 组执行：AUTO 走存储核心 / LOCAL 走内置模拟层，结果统一为 StorageResult
+ * </pre>
+ * 数据字典（表元数据）由 B 组 {@link CatalogImpl} 持有，建表/删表在此登记，
+ * 供语义分析、计划生成与 GUI 表列表三方共享。
+ * <p>两条执行路径：
+ * <ul>
+ *   <li>AUTO —— 计划经 {@link PhysicalPlanJson} 序列化为 JSON，由
+ *       {@link StorageClient} 以行协议调用 C 组 storage_core.exe（数据落盘持久化）；
+ *       核心没有 sort/group 算子，ORDER BY / GROUP BY / COUNT(*) 在 Java 端后处理；
+ *       核心不可用时自动回退内置示例数据，保证 Demo 脱离 C++ 程序也能完整演示</li>
+ *   <li>LOCAL —— 全部在 JVM 内模拟执行（simulate* 方法族），数据存内存不落盘，
+ *       供 TestRunner 离线测试与无存储环境演示</li>
+ * </ul>
+ * 所有失败（词法/语法/语义/计划/存储）都转为带错误码的 ERROR 结果返回，不抛异常，
+ * 保证 REPL/GUI 永不崩溃。非线程安全：仅在 REPL 单线程或 Swing EDT 中调用。
  */
 public class SqlEngine implements AutoCloseable {
 

@@ -7,9 +7,12 @@ import com.sqxdl.parser.Token;
 import com.sqxdl.semantic.PlanNode;
 
 /**
- * DEBUG 输出工具：由 {@link SqlEngine} 在流水线各阶段调用，打印 Token 流、
- * AST 树、语义检查结果与优化前后 Plan 树。开关默认取 JVM 参数 -Dsqxdl.debug=true；
- * CLI 中也可随时输入 debug 命令切换，无需重启程序。
+ * DEBUG 输出工具（D 组）：由 {@link SqlEngine} 在流水线各阶段调用，打印
+ * Token 流（A 组 Lexer 产物）、AST 树（A 组 Parser 产物）、语义检查结果
+ * （B 组 SemanticAnalyzer）与优化前后 Plan 树（B 组 PlanGenerator 产物），
+ * 以及端到端耗时分解。指导书要求的"打印 Token 流 / AST / Plan 树"由此实现。
+ * <p>开关：默认取 JVM 参数 {@code -Dsqxdl.debug=true}；CLI 中也可随时输入
+ * {@code debug} 命令切换，无需重启程序。仅用于调试与报告截图，关闭时零输出。
  */
 final class SqlDebug {
 
@@ -24,9 +27,14 @@ final class SqlDebug {
      * AUTO 模式细分存储侧四段（序列化/发送/核心执行+回传/响应解析，取自
      * StorageClient 最近一次调用的采样）；LOCAL 与回退模拟只统计"本地模拟"一段。
      *
-     * @param outcome     结果类型（ROWCOUNT/RESULTSET/ERROR 等）
-     * @param client      存储客户端（AUTO 路径传实例；LOCAL/模拟传 null）
-     * @param storageNanos 整个存储执行段的总耗时（executePlan 或 simulate）
+     * @param outcome        结果类型名（ROWCOUNT/RESULTSET/ERROR 等）
+     * @param totalNanos     端到端总耗时（纳秒）
+     * @param normalizeNanos 规范化段耗时（纳秒）
+     * @param parseNanos     词法+语法解析段耗时（纳秒）
+     * @param semanticNanos  语义分析段耗时（纳秒）
+     * @param planNanos      计划生成段耗时（纳秒）
+     * @param storageNanos   存储执行段总耗时（纳秒；LOCAL/模拟时展示用）
+     * @param client         存储客户端（AUTO 路径传实例，展示存储侧细分；LOCAL/模拟传 null）
      */
     static void printTiming(String outcome, long totalNanos, long normalizeNanos, long parseNanos,
                             long semanticNanos, long planNanos, long storageNanos,

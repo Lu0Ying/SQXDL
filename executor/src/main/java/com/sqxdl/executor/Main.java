@@ -19,15 +19,21 @@ import java.util.Locale;
 import java.util.Scanner;
 
 /**
- * 程序入口（D 组）。
- * 职责：启动 SQXDL 的交互式 REPL，读取用户 SQL 并交给 {@link SqlEngine}
- *       驱动 词法 -> 语法 -> 语义 -> 计划生成 -> 执行 的完整流水线。
- * 输入分三种路径（共用同一条 {@link #processInput} 处理逻辑）：
- *       真终端 —— JLine LineReader，支持 ↑↓ 翻历史、Ctrl+R 搜索、行内编辑；
- *       管道/重定向（无 TTY）—— Scanner 循环，history / !N / !! 元命令等效替代；
- *       脚本文件 —— -f/--file 指定 .sql 文件，逐行执行（指导书：输入支持 SQL 文件）。
- * 执行模式为 AUTO：优先真实存储核心（storage_core.exe），
- * 存储核心不可用时自动回退内置示例数据，保证 Demo 完整可演示。
+ * 程序入口 —— D 组（executor 模块）的命令行前端。
+ * <p>职责：启动 SQXDL 交互式 REPL，读取用户 SQL 交给 {@link SqlEngine} 驱动
+ * 词法 -> 语法 -> 语义 -> 计划生成 -> 执行 的完整流水线（各阶段由 A/B 组模块
+ * 与存储核心完成，见 SqlEngine 类注释）；本类只负责输入输出与元命令，
+ * 不含任何解析/执行逻辑。
+ * <p>三种输入路径（SQL 部分共用同一条 {@link #processInput} 处理逻辑）：
+ * <ul>
+ *   <li>真终端 —— JLine LineReader，支持 ↑↓ 翻历史、Ctrl+R 搜索、行内编辑</li>
+ *   <li>管道/重定向（无 TTY）—— Scanner 循环，history / !! / !N 元命令等效替代</li>
+ *   <li>脚本文件 —— {@code -f <path>} / {@code --file <path>} 指定 .sql 文件，
+ *       连续语句批量执行（指导书要求：输入支持 SQL 文件或标准输入）</li>
+ * </ul>
+ * 元命令：exit 退出、debug 开关流水线调试输出、history 列历史、!N 重放。
+ * 执行模式为 AUTO：优先真实存储核心（storage_core.exe，数据落盘持久化），
+ * 不可用时自动回退内置示例数据，保证 Demo 完整可演示。
  */
 public class Main {
 

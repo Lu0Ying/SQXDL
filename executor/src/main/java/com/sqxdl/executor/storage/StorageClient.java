@@ -18,11 +18,22 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /**
- * 存储核心客户端：以服务式会话调用 storage_core.exe。
- * 按协议（storage/readme.md），核心进程启动后常驻主循环：
- * 读一行计划 JSON -> 执行 -> 输出一行结果 JSON -> 继续。
- * 因此进程跨语句复用，建表目录与数据在会话内保持；
- * 进程意外退出或调用超时时关闭会话，下一次执行自动重启新进程。
+ * 存储核心客户端（D 组 storage 子包）：以服务式会话调用 C 组的 storage_core.exe。
+ * <p>行协议（契约见 storage/readme.md）：核心进程启动后常驻主循环，
+ * 从 stdin 读一行计划 JSON -> 执行 -> 向 stdout 写一行结果 JSON -> 继续。
+ * 进程因此跨语句复用，建表目录与数据在会话内保持；进程意外退出或调用
+ * 超时时关闭会话，下一次执行自动重启新进程。
+ * <p>两种调用方式：
+ * <ul>
+ *   <li>{@link #execute(PlanNode)} / {@link #call(String)} —— 单条：写一行、等回一行，
+ *       交互式 REPL 的常规路径</li>
+ *   <li>{@link #executeAll(List)} / {@link #callAll(List)} —— 批量（流水线协议）：
+ *       一次写入多行、按序读回等量结果，脚本模式与批量 INSERT 使用，
+ *       消灭逐条往返的固定开销</li>
+ * </ul>
+ * 最近一次调用的分段耗时（序列化/发送/核心执行+回传/响应解析）以纳秒记录在
+ * lastXxxNanos 字段，供 {@link com.sqxdl.executor.SqlDebug} 耗时分解与
+ * {@link com.sqxdl.executor.PerfTest} 基准展示（REPL/GUI 单线程调用，无并发竞争）。
  * 任何失败（程序缺失、启动失败、超时、返回异常）都封装为带错误码的
  * ERROR 结果返回，不向调用方抛异常，保证 REPL/GUI 永不崩溃。
  */

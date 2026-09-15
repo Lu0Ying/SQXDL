@@ -5,8 +5,18 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 存储核心返回结果的 Java 模型，对应 storage/readme.md 第 2 节的输出契约：
- * resultset（查询数据集）/ rowcount（影响行数）/ error（错误信息）。
+ * 存储核心返回结果的 Java 模型（D 组 storage 子包），对应 storage/readme.md
+ * 第 2 节的输出契约：resultset（查询数据集）/ rowcount（影响行数）/ error（错误信息）。
+ * <p>三种来源：
+ * <ul>
+ *   <li>{@link #parse(String)} —— 解析 C 组核心进程输出的一行结果 JSON</li>
+ *   <li>{@link #error(String, String)} —— Java 侧构造的本地错误（程序缺失、
+ *       超时、语义/语法错误包装等），错误码与核心侧共用一套命名</li>
+ *   <li>{@link #resultset(List, List)} / {@link #rowcount(long)} —— LOCAL 模拟层
+ *       与测试直接构造的本地结果</li>
+ * </ul>
+ * 统一的数据形状让 Executor 渲染层、PerfTest 基准与 GUI 表格无需区分结果来自
+ * 真实存储核心还是本地模拟。
  */
 public class StorageResult {
 

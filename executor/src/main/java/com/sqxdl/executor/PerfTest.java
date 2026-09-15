@@ -7,7 +7,13 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * 大数据量端到端性能基准（指导书：验证"大量数据的插入与查询"）。
+ * 大数据量端到端性能基准（D 组，指导书：验证"大量数据的插入与查询"）。
+ * <p>基准项：批量 INSERT 1000 行（走 {@link SqlEngine#executeBatch} 流水线协议）、
+ * COUNT(*) 全表扫描、等值点查、未命中点查（最坏全扫）、范围查询、GROUP BY
+ * 分组计数、ORDER BY 全表排序；每项输出平均耗时与吞吐，并附 8 段耗时分解
+ * （{@link SqlEngine#lastTimingNanos()} / {@link SqlEngine#lastBatchNanos()} 采样），
+ * 可直接定位瓶颈所在阶段（实测：Java 侧流水线与 IPC 均在毫秒级以下，
+ * 大表查询耗时集中在存储核心的页扫描，见项目 README）。
  * <p>测量口径为端到端耗时：SQL 文本 -> 词法/语法/语义 -> 计划生成 -> JSON 序列化
  * -> 存储核心进程往返 -> 结果解析，即用户真实感知的执行时间。
  * <p>运行方式：{@code java com.sqxdl.executor.PerfTest}（AUTO 模式，需 storage_core.exe；

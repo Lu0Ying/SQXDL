@@ -16,11 +16,16 @@ import java.awt.event.WindowEvent;
 import java.util.List;
 
 /**
- * SQXDL 数据库管理系统图形界面（纯 Swing）。
- * 界面只负责展示与交互，SQL 一律交给 {@link SqlEngine} 执行——
- * 与 CLI（Main）共用同一套 解析 -> 语义分析 -> 计划生成 流水线；
- * 引擎以 AUTO 模式运行：数据写入存储核心并落盘持久化，重启后不还原；
- * 存储核心不可用时自动回退内置示例数据模拟。
+ * SQXDL 数据库管理系统图形界面（D 组 swing 包，纯 Swing 实现，程序的第二入口）。
+ * <p>界面只负责展示与交互，SQL 一律交给 {@link SqlEngine} 执行——
+ * 与 CLI（Main）共用同一套 解析 -> 语义分析 -> 计划生成 流水线
+ * （各阶段由 A/B 组模块与存储核心完成，见 SqlEngine 类注释）。
+ * <p>功能：左侧表列表浏览（点击加载整表数据）、SQL 编辑区手动执行、
+ * 执行日志、↑/↓ 历史输入；表列表与数据字典实时同步（建表/删表后刷新）。
+ * 引擎以 AUTO 模式运行：数据写入存储核心并落盘持久化（\\SQXDL\\data\\），
+ * 重启后不还原；存储核心不可用时自动回退内置示例数据模拟。
+ * <p>非线程安全约定：所有 SQL 在 Swing EDT 中执行（输入量级为教学演示，
+ * 不会长时间阻塞界面）；窗口关闭时 {@code engine.close()} 结束存储会话落盘。
  */
 public class SwingDemo extends JFrame {
 
