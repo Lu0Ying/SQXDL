@@ -347,6 +347,10 @@ public class SwingDemo extends JFrame {
 
     /** 执行单条 SQL：调用引擎流水线，渲染结果、回退提示与耗时。 */
     private void executeSql(String sql) {
+        // 用户手动执行 SELECT：清除左侧表列表选中（点击列表触发的查询走 showTable，不受影响）
+        if (sql.trim().toUpperCase().startsWith("SELECT")) {
+            tableList.clearSelection();
+        }
         executeSql(sql, true);
     }
 
