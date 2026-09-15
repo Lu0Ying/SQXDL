@@ -10,15 +10,20 @@ import org.jline.terminal.TerminalBuilder;
 
 import java.io.Console;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
 import java.util.Scanner;
 
 /**
  * 程序入口（D 组）。
  * 职责：启动 SQXDL 的交互式 REPL，读取用户 SQL 并交给 {@link SqlEngine}
  *       驱动 词法 -> 语法 -> 语义 -> 计划生成 -> 执行 的完整流水线。
- * 输入分两种路径（共用同一条 {@link #processInput} 处理逻辑）：
+ * 输入分三种路径（共用同一条 {@link #processInput} 处理逻辑）：
  *       真终端 —— JLine LineReader，支持 ↑↓ 翻历史、Ctrl+R 搜索、行内编辑；
- *       管道/重定向（无 TTY）—— Scanner 循环，history / !N / !! 元命令等效替代。
+ *       管道/重定向（无 TTY）—— Scanner 循环，history / !N / !! 元命令等效替代；
+ *       脚本文件 —— -f/--file 指定 .sql 文件，逐行执行（指导书：输入支持 SQL 文件）。
  * 执行模式为 AUTO：优先真实存储核心（storage_core.exe），
  * 存储核心不可用时自动回退内置示例数据，保证 Demo 完整可演示。
  */
@@ -30,15 +35,75 @@ public class Main {
     public static void main(String[] args) {
         try {
             SqlEngine engine = new SqlEngine(SqlEngine.Mode.AUTO);
+            boolean success = true;
             try {
-                runRepl(engine);
+                String scriptFile = parseScriptFile(args);
+                if (scriptFile != null) {
+                    success = runScriptFile(engine, scriptFile);
+                } else {
+                    runRepl(engine);
+                }
             } finally {
                 // 任何退出路径都结束存储会话：核心在协议 exit 时才把行数据刷入磁盘
                 engine.close();
             }
+            // 脚本执行失败以非零码退出，便于批处理/CI 判断结果
+            if (!success) {
+                System.exit(1);
+            }
         } catch (Exception e) {
             System.err.println("⚠发生未预期的错误: " + e.getMessage());
+            System.exit(1);
         }
+    }
+
+    /**
+     * 解析脚本文件参数：{@code -f <path>} / {@code --file <path>} 或首个位置参数。
+     *
+     * @return 文件路径；未指定时返回 null（走交互模式）
+     * @throws IllegalArgumentException -f/--file 后缺失路径时抛出
+     */
+    private static String parseScriptFile(String[] args) {
+        for (int i = 0; i < args.length; i++) {
+            if (args[i].equals("-f") || args[i].equals("--file")) {
+                if (i + 1 >= args.length) {
+                    throw new IllegalArgumentException(args[i] + " 需要指定 SQL 文件路径");
+                }
+                return args[i + 1];
+            }
+        }
+        return args.length > 0 ? args[0] : null;
+    }
+
+    /**
+     * 脚本文件路径：逐行读取 .sql 文件并复用 {@link #processInput} 执行。
+     * 空行与整行注释（-- 开头）静默跳过；其余行为（exit 提前结束、
+     * debug/history/!N 元命令）与交互模式完全一致。
+     *
+     * @return false 表示读取失败或脚本中出现 exit 之外的致命错误
+     */
+    private static boolean runScriptFile(SqlEngine engine, String path) {
+        Executor renderer = new Executor();
+        CommandHistory history = new CommandHistory();
+        List<String> lines;
+        try {
+            lines = Files.readAllLines(Path.of(path), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            System.out.println("⚠无法读取 SQL 文件: " + path + " (" + e.getMessage() + ")");
+            return false;
+        }
+        for (String line : lines) {
+            String sql = line.trim();
+            if (sql.isEmpty() || sql.startsWith("--")) {
+                continue; // 空行/注释行不进入历史，也不触发语义报错
+            }
+            // 回显实际执行的语句，保证脚本执行过程可追溯（与 !N 回显风格一致）
+            System.out.println("sqxdl> " + sql);
+            if (!processInput(engine, renderer, history, sql)) {
+                break; // 脚本中出现 exit：提前结束
+            }
+        }
+        return true;
     }
 
     /** 按 TTY 可用性选择输入路径。 */

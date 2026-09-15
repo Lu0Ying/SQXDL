@@ -127,15 +127,20 @@ public class StorageClient {
         closeSession();
     }
 
-    /** 关闭当前会话：先发协议 exit 让核心正常落盘，超时再强杀（幂等） */
+    /** 关闭当前会话：先发协议 exit 让核心正常落盘，超时再温和终止、最后强杀（幂等） */
     private void closeSession() {
         if (process != null) {
             try {
-                // 协议退出：存储核心收到 exit 后正常结束并把行数据刷入磁盘
+                // 协议退出：存储核心收到 exit 后正常结束并把行数据刷入磁盘。
+                // flush 耗时与脏页数量相关，超时强杀会把 db 写成半文件（页校验失败），
+                // 因此分级等待：5s 正常等待 -> destroy 温和终止 -> 再等 2s -> 才强杀兜底
                 process.getOutputStream().write("exit\n".getBytes(StandardCharsets.UTF_8));
                 process.getOutputStream().flush();
-                if (!process.waitFor(2, TimeUnit.SECONDS)) {
-                    process.destroyForcibly();
+                if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                    process.destroy();
+                    if (!process.waitFor(2, TimeUnit.SECONDS)) {
+                        process.destroyForcibly();
+                    }
                 }
             } catch (IOException | InterruptedException e) {
                 process.destroyForcibly();
