@@ -206,6 +206,12 @@ mvn -pl executor exec:java -Dexec.mainClass=com.sqxdl.executor.Main -Dexec.args=
 场景以退出码 1 结束（便于批处理判断结果）。行内注释（分号后 `-- ...`）
 由引擎剥离，脚本里同样可用。
 
+**性能基准**：`java com.sqxdl.executor.PerfTest` 自动建 `perf_log` 表
+（1000 行 × 约 720 字节，跨约 180 个 4KB 页），测量大输入（批量 INSERT）
+与大查找（全表扫描 / 等值点查 / 未命中全扫 / 范围查 / GROUP BY / ORDER BY）
+的端到端耗时与吞吐，结束后自动删表清理；统计口径含 SQL 全流水线与存储
+核心进程往返，可直接作为报告中"大量数据的插入与查询"验证数据。
+
 ---
 
 ## 7. 设计原则
