@@ -1170,4 +1170,292 @@ class SemanticAnalyzerTest {
         assertTrue(ex.getMessage().contains("不支持的聚合函数"),
                 "应提示不支持的聚合函数，实际: " + ex.getMessage());
     }
+
+    // ========== 表别名（alias）语义分析测试 ==========
+
+    @Test
+    void alias_mainTable_selectWithAlias_succeeds() {
+        // SELECT s.id, s.name FROM student s
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", "s",
+                Arrays.asList("s.id", "s.name"), null,
+                List.of(), List.of(), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void alias_mainTable_whereWithAlias_succeeds() {
+        // SELECT * FROM student s WHERE s.age > 18
+        ASTNode.BinaryExpr where = new ASTNode.BinaryExpr(1, 40, ">",
+                new ASTNode.IdentifierExpr(1, 38, "s.age"),
+                new ASTNode.LiteralExpr(1, 45, "18", ASTNode.LiteralExpr.Kind.NUMBER));
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", "s",
+                Arrays.asList("*"), where,
+                List.of(), List.of(), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void alias_joinTable_onWithAlias_succeeds() {
+        // SELECT * FROM student s JOIN course c ON s.id = c.cid
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "s.id"),
+                new ASTNode.IdentifierExpr(1, 40, "c.cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", "c", onCond);
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", "s",
+                Arrays.asList("*"), null,
+                List.of(join), List.of(), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void alias_joinTable_whereWithAlias_succeeds() {
+        // SELECT * FROM student s JOIN course c ON s.id = c.cid WHERE s.age > 18
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "s.id"),
+                new ASTNode.IdentifierExpr(1, 40, "c.cid"));
+        ASTNode.BinaryExpr where = new ASTNode.BinaryExpr(1, 50, ">",
+                new ASTNode.IdentifierExpr(1, 48, "s.age"),
+                new ASTNode.LiteralExpr(1, 55, "18", ASTNode.LiteralExpr.Kind.NUMBER));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", "c", onCond);
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", "s",
+                Arrays.asList("*"), where,
+                List.of(join), List.of(), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void alias_inAggregateFunction_succeeds() {
+        // SELECT SUM(s.score) FROM student s
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", "s",
+                Arrays.asList("SUM(s.score)"), null,
+                List.of(), List.of(), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void alias_groupByWithAlias_succeeds() {
+        // SELECT s.age, SUM(s.score) FROM student s GROUP BY s.age
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", "s",
+                Arrays.asList("s.age", "SUM(s.score)"), null,
+                List.of(), List.of("s.age"), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void alias_orderByWithAlias_succeeds() {
+        // SELECT * FROM student s ORDER BY s.age DESC
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", "s",
+                Arrays.asList("*"), null,
+                List.of(), List.of(),
+                List.of(new ASTNode.SelectStmt.OrderItem("s.age", "DESC")));
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    @Test
+    void alias_unknownAlias_throwsException() {
+        // SELECT x.id FROM student s（x 不是已注册的别名）
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", "s",
+                Arrays.asList("x.id"), null,
+                List.of(), List.of(), List.of());
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("不在当前查询涉及的表中"),
+                "应提示别名不在查询中，实际: " + ex.getMessage());
+    }
+
+    @Test
+    void alias_columnNotExistsInAliasTable_throwsException() {
+        // SELECT s.nonexistent FROM student s
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", "s",
+                Arrays.asList("s.nonexistent"), null,
+                List.of(), List.of(), List.of());
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("不存在"),
+                "应提示列不存在，实际: " + ex.getMessage());
+    }
+
+    @Test
+    void alias_noAlias_tableNameStillWorks() {
+        // SELECT student.id FROM student（无别名时，表名直接可用）
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", null,
+                Arrays.asList("student.id"), null,
+                List.of(), List.of(), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    // ========== PlanGenerator 别名解析测试 ==========
+
+    @Test
+    void plan_aliasInWhere_resolvedToTableName() {
+        // SELECT * FROM student s WHERE s.age > 18
+        // 验证计划树中 WHERE 条件的列名已从 s.age → student.age
+        ASTNode.BinaryExpr where = new ASTNode.BinaryExpr(1, 40, ">",
+                new ASTNode.IdentifierExpr(1, 38, "s.age"),
+                new ASTNode.LiteralExpr(1, 45, "18", ASTNode.LiteralExpr.Kind.NUMBER));
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", "s",
+                Arrays.asList("*"), where,
+                List.of(), List.of(), List.of());
+        PlanGenerator pg = new PlanGenerator(catalog);
+        pg.setAnalyzer(analyzer);
+        analyzer.analyze(stmt);
+        PlanNode plan = pg.generate(stmt);
+        String json = pg.toJson(plan);
+        // WHERE 中的 s.age 应被解析为 student.age
+        assertTrue(json.contains("student.age"),
+                "WHERE 中的别名 s.age 应解析为 student.age，实际: " + json);
+        assertFalse(json.contains("s.age"),
+                "JSON 中不应残留别名前缀 s.age，实际: " + json);
+    }
+
+    @Test
+    void plan_aliasInOnCondition_resolvedToTableName() {
+        // SELECT * FROM student s JOIN course c ON s.id = c.cid
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "s.id"),
+                new ASTNode.IdentifierExpr(1, 40, "c.cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", "c", onCond);
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", "s",
+                Arrays.asList("*"), null,
+                List.of(join), List.of(), List.of());
+        PlanGenerator pg = new PlanGenerator(catalog);
+        pg.setAnalyzer(analyzer);
+        analyzer.analyze(stmt);
+        PlanNode plan = pg.generate(stmt);
+        String json = pg.toJson(plan);
+        // ON 条件中的别名应被解析
+        assertTrue(json.contains("student.id"),
+                "ON 中的 s.id 应解析为 student.id，实际: " + json);
+        assertTrue(json.contains("course.cid"),
+                "ON 中的 c.cid 应解析为 course.cid，实际: " + json);
+        assertFalse(json.contains("s.id"),
+                "JSON 中不应残留 s.id，实际: " + json);
+        assertFalse(json.contains("c.cid"),
+                "JSON 中不应残留 c.cid，实际: " + json);
+    }
+
+    @Test
+    void plan_aliasInSelectList_resolvedToTableName() {
+        // SELECT s.id, s.name FROM student s
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", "s",
+                Arrays.asList("s.id", "s.name"), null,
+                List.of(), List.of(), List.of());
+        PlanGenerator pg = new PlanGenerator(catalog);
+        pg.setAnalyzer(analyzer);
+        analyzer.analyze(stmt);
+        PlanNode plan = pg.generate(stmt);
+        String json = pg.toJson(plan);
+        assertTrue(json.contains("student.id"),
+                "SELECT 中的 s.id 应解析为 student.id，实际: " + json);
+        assertTrue(json.contains("student.name"),
+                "SELECT 中的 s.name 应解析为 student.name，实际: " + json);
+    }
+
+    @Test
+    void plan_aliasInGroupBy_resolvedToTableName() {
+        // SELECT s.age, SUM(s.score) FROM student s GROUP BY s.age
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", "s",
+                Arrays.asList("s.age", "SUM(s.score)"), null,
+                List.of(), List.of("s.age"), List.of());
+        PlanGenerator pg = new PlanGenerator(catalog);
+        pg.setAnalyzer(analyzer);
+        analyzer.analyze(stmt);
+        PlanNode plan = pg.generate(stmt);
+        String json = pg.toJson(plan);
+        // GROUP BY 中的 s.age 应解析为 student.age
+        assertTrue(json.contains("student.age"),
+                "GROUP BY 中的 s.age 应解析为 student.age，实际: " + json);
+        // 聚合函数中的 s.score 应解析为 student.score
+        assertTrue(json.contains("SUM(student.score)"),
+                "聚合函数 SUM(s.score) 应解析为 SUM(student.score)，实际: " + json);
+    }
+
+    @Test
+    void plan_aliasInOrderBy_resolvedToTableName() {
+        // SELECT * FROM student s ORDER BY s.age DESC
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", "s",
+                Arrays.asList("*"), null,
+                List.of(), List.of(),
+                List.of(new ASTNode.SelectStmt.OrderItem("s.age", "DESC")));
+        PlanGenerator pg = new PlanGenerator(catalog);
+        pg.setAnalyzer(analyzer);
+        analyzer.analyze(stmt);
+        PlanNode plan = pg.generate(stmt);
+        String json = pg.toJson(plan);
+        assertTrue(json.contains("student.age"),
+                "ORDER BY 中的 s.age 应解析为 student.age，实际: " + json);
+        assertFalse(json.contains("s.age"),
+                "JSON 中不应残留 s.age，实际: " + json);
+    }
+
+    @Test
+    void plan_alias_predicatePushdownWithAlias_succeeds() {
+        // SELECT * FROM student s JOIN course c ON s.id = c.cid WHERE s.age > 18
+        // 验证别名解析后谓词能正确下推到 student 表
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "s.id"),
+                new ASTNode.IdentifierExpr(1, 40, "c.cid"));
+        ASTNode.BinaryExpr where = new ASTNode.BinaryExpr(1, 50, ">",
+                new ASTNode.IdentifierExpr(1, 48, "s.age"),
+                new ASTNode.LiteralExpr(1, 55, "18", ASTNode.LiteralExpr.Kind.NUMBER));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", "c", onCond);
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", "s",
+                Arrays.asList("*"), where,
+                List.of(join), List.of(), List.of());
+        PlanGenerator pg = new PlanGenerator(catalog);
+        pg.setAnalyzer(analyzer);
+        analyzer.analyze(stmt);
+        PlanNode plan = pg.generate(stmt);
+        String json = pg.toJson(plan);
+        // WHERE s.age > 18 应解析为 student.age 并下推到 student 的 scan
+        assertTrue(json.contains("student.age"),
+                "下推的谓词应使用 student.age，实际: " + json);
+    }
+
+    @Test
+    void plan_noAlias_unchanged() {
+        // SELECT student.id FROM student（无别名，表名直接引用）
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", null,
+                Arrays.asList("student.id"), null,
+                List.of(), List.of(), List.of());
+        PlanGenerator pg = new PlanGenerator(catalog);
+        pg.setAnalyzer(analyzer);
+        analyzer.analyze(stmt);
+        PlanNode plan = pg.generate(stmt);
+        String json = pg.toJson(plan);
+        // 无别名时表名应保持原样
+        assertTrue(json.contains("student.id"),
+                "无别名时 student.id 应保持不变，实际: " + json);
+    }
 }

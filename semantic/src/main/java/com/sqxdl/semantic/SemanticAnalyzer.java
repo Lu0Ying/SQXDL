@@ -26,6 +26,8 @@ public class SemanticAnalyzer {
 
     private final CatalogImpl catalog;
     private final Map<ASTNode.SelectStmt, List<String>> expandedSelectLists = new HashMap<>();
+    /** 别名 → 实际表名 的映射（FROM student s / JOIN teacher t），无别名时为空 */
+    private final Map<String, String> aliasToTable = new HashMap<>();
 
     public SemanticAnalyzer(CatalogImpl catalog) {
         this.catalog = catalog;
@@ -37,6 +39,7 @@ public class SemanticAnalyzer {
      * @param ast 语法树根节点
      */
     public void analyze(ASTNode ast) {
+        aliasToTable.clear();
         if (ast instanceof ASTNode.SelectStmt stmt) {
             analyzeSelectStmt(stmt);
         } else if (ast instanceof ASTNode.InsertStmt stmt) {
@@ -76,10 +79,19 @@ public class SemanticAnalyzer {
         checkTableExists(mainTable, stmt);
         tableNames.add(mainTable);
 
+        // 注册主表别名（必须在 JOIN ON 条件解析之前注册）
+        if (stmt.getTableAlias() != null) {
+            aliasToTable.put(stmt.getTableAlias(), mainTable);
+        }
+
         for (ASTNode.SelectStmt.JoinClause join : stmt.getJoins()) {
             String joinTable = join.getTableName();
             checkTableExists(joinTable, stmt);
             tableNames.add(joinTable);
+            // 注册 JOIN 表别名
+            if (join.getAlias() != null) {
+                aliasToTable.put(join.getAlias(), joinTable);
+            }
             // 检查 ON 条件（在多表上下文中解析列）
             analyzeCondition(join.getOnCond(), tableNames);
         }
@@ -238,19 +250,21 @@ public class SemanticAnalyzer {
      * 已指定表名故不参与歧义检查。
      */
     private String resolveColumn(String col, List<String> tableNames, ASTNode node) {
-        // 点限定标识符：table.column → 拆分后直接校验表与列
+        // 点限定标识符：table.column 或 alias.column → 拆分后校验表与列
         int dot = col.indexOf('.');
         if (dot > 0) {
-            String tableName = col.substring(0, dot);
+            String tablePart = col.substring(0, dot);
             String columnName = col.substring(dot + 1);
-            // 表名必须在当前查询涉及的表列表中
-            if (!tableNames.contains(tableName)) {
-                throw error("表 " + tableName + " 不在当前查询涉及的表中", node);
+            // 先查别名映射，找不到则当作表名直接使用
+            String actualTable = aliasToTable.getOrDefault(tablePart, tablePart);
+            // 解析后的表名必须在当前查询涉及的表列表中
+            if (!tableNames.contains(actualTable)) {
+                throw error("表或别名 " + tablePart + " 不在当前查询涉及的表中", node);
             }
-            if (!catalog.columnExists(tableName, columnName)) {
-                throw error("列 " + col + " 在表 " + tableName + " 中不存在", node);
+            if (!catalog.columnExists(actualTable, columnName)) {
+                throw error("列 " + columnName + " 在表 " + actualTable + " 中不存在", node);
             }
-            return tableName;
+            return actualTable;
         }
 
         // 普通列名：在所有表中查找，存在多张表命中时报歧义

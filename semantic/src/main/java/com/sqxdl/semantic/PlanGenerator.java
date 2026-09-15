@@ -190,8 +190,20 @@ public class PlanGenerator {
             tableNames.add(join.getTableName());
         }
 
-        // === 谓词下推：拆分 WHERE 为合取项 ===
-        List<ASTNode> conjuncts = splitConjuncts(maybeOptimizeCondition(stmt.getWhereCond()));
+        // === 构建别名 → 实际表名映射 ===
+        Map<String, String> aliasToTable = new HashMap<>();
+        if (stmt.getTableAlias() != null) {
+            aliasToTable.put(stmt.getTableAlias(), stmt.getTableName());
+        }
+        for (ASTNode.SelectStmt.JoinClause join : joins) {
+            if (join.getAlias() != null) {
+                aliasToTable.put(join.getAlias(), join.getTableName());
+            }
+        }
+
+        // === 谓词下推：拆分 WHERE 为合取项（先解析别名）===
+        List<ASTNode> conjuncts = splitConjuncts(
+                maybeOptimizeCondition(resolveAliases(stmt.getWhereCond(), aliasToTable)));
         // 单表谓词按表分组（可下推）；跨表谓词留在 Join 之上
         Map<String, List<ASTNode>> perTableFilters = new HashMap<>();
         List<ASTNode> joinFilters = new ArrayList<>();
@@ -209,8 +221,8 @@ public class PlanGenerator {
             }
         }
 
-        // === 列裁剪：计算每张表实际需要的列 ===
-        Map<String, Set<String>> neededColumns = computeNeededColumns(stmt, tableNames);
+        // === 列裁剪：计算每张表实际需要的列（含别名解析）===
+        Map<String, Set<String>> neededColumns = computeNeededColumns(stmt, tableNames, aliasToTable);
 
         // === 构建数据源 ===
         PlanNode plan;
@@ -220,11 +232,12 @@ public class PlanGenerator {
             plan = buildScanWithPushdown(mainTable, neededColumns, perTableFilters);
         } else {
             // 多表 JOIN：RBO 顺序优化
-            // 构建原始 ON 条件列表：[null, join1.onCond, join2.onCond, ...]
+            // 构建原始 ON 条件列表：[null, join1.onCond, join2.onCond, ...]（先解析别名）
             List<ASTNode> originalOnConds = new ArrayList<>();
             originalOnConds.add(null);  // 主表无 ON
             for (ASTNode.SelectStmt.JoinClause join : joins) {
-                originalOnConds.add(maybeOptimizeCondition(join.getOnCond()));
+                originalOnConds.add(maybeOptimizeCondition(
+                        resolveAliases(join.getOnCond(), aliasToTable)));
             }
             // RBO 重排表顺序
             JoinOrderResult joinOrder = computeJoinOrder(
@@ -249,24 +262,29 @@ public class PlanGenerator {
             }
         }
 
-        // === 叠加 GROUP BY（可选）===
+        // === 叠加 GROUP BY（可选，解析别名）===
         if (!stmt.getGroupBy().isEmpty() || hasAggregate(stmt)) {
-            List<String> aggList = collectAggregates(stmt);
-            plan = new PlanNode.GroupByPlan(new ArrayList<>(stmt.getGroupBy()),
-                    aggList, plan);
+            List<String> resolvedGroupBy = new ArrayList<>();
+            for (String col : stmt.getGroupBy()) {
+                resolvedGroupBy.add(resolveAliasInString(col, aliasToTable));
+            }
+            List<String> aggList = collectAggregates(stmt, aliasToTable);
+            plan = new PlanNode.GroupByPlan(resolvedGroupBy, aggList, plan);
         }
 
-        // === 叠加 ORDER BY（可选）===
+        // === 叠加 ORDER BY（可选，解析别名）===
         if (!stmt.getOrderBy().isEmpty()) {
             List<PlanNode.OrderByPlan.OrderItem> items = new ArrayList<>();
             for (ASTNode.SelectStmt.OrderItem item : stmt.getOrderBy()) {
-                items.add(new PlanNode.OrderByPlan.OrderItem(item.getColumn(), item.getDirection()));
+                items.add(new PlanNode.OrderByPlan.OrderItem(
+                        resolveAliasInString(item.getColumn(), aliasToTable),
+                        item.getDirection()));
             }
             plan = new PlanNode.OrderByPlan(items, plan);
         }
 
-        // === 叠加投影 ===
-        return new PlanNode.ProjectPlan(expandColumns(stmt), plan);
+        // === 叠加投影（解析别名）===
+        return new PlanNode.ProjectPlan(expandColumns(stmt, aliasToTable), plan);
     }
 
     // ========== 谓词下推辅助方法 ==========
@@ -574,7 +592,8 @@ public class PlanGenerator {
      * 列来源：SELECT 清单、WHERE 条件、JOIN ON 条件、GROUP BY、ORDER BY。
      */
     private Map<String, Set<String>> computeNeededColumns(ASTNode.SelectStmt stmt,
-                                                          List<String> tableNames) {
+                                                          List<String> tableNames,
+                                                          Map<String, String> aliasToTable) {
         Map<String, Set<String>> result = new HashMap<>();
         for (String t : tableNames) {
             result.put(t, new HashSet<>());
@@ -592,13 +611,11 @@ public class PlanGenerator {
             return result;
         }
 
-        // SELECT 清单中的列
+        // SELECT 清单中的列（解析别名后加入需求集）
         for (String col : selectList) {
             if (AggregateFunction.isAggregate(col)) {
-                // 聚合函数：语义分析阶段已校验合法性，此处安全解析
                 AggregateFunction agg = AggregateFunction.parse(col);
                 if (agg.isCountStar()) {
-                    // COUNT(*) 需要所有表的列（执行器要数行数）
                     for (String t : tableNames) {
                         List<String> cols = catalog.getColumns(t);
                         if (cols != null) {
@@ -606,44 +623,49 @@ public class PlanGenerator {
                         }
                     }
                 } else {
-                    // SUM/AVG/MIN/MAX/COUNT(col)：只需要参数列
-                    addColumnRef(agg.getArgument(), tableNames, result);
+                    String resolvedArg = resolveAliasInString(agg.getArgument(), aliasToTable);
+                    addColumnRef(resolvedArg, tableNames, aliasToTable, result);
                 }
             } else {
-                addColumnRef(col, tableNames, result);
+                String resolved = resolveAliasInString(col, aliasToTable);
+                addColumnRef(resolved, tableNames, aliasToTable, result);
             }
         }
 
-        // WHERE 条件中的列
-        collectColumnRefs(stmt.getWhereCond(), tableNames, result);
+        // WHERE 条件中的列（WHERE 已在 generateSelect 中解析过别名，此处直接收集）
+        collectColumnRefs(stmt.getWhereCond(), tableNames, aliasToTable, result);
 
-        // JOIN ON 条件中的列
+        // JOIN ON 条件中的列（ON 条件已在 generateSelect 中解析过别名）
         for (ASTNode.SelectStmt.JoinClause join : stmt.getJoins()) {
-            collectColumnRefs(join.getOnCond(), tableNames, result);
+            collectColumnRefs(join.getOnCond(), tableNames, aliasToTable, result);
         }
 
-        // GROUP BY 列
+        // GROUP BY 列（解析别名）
         for (String col : stmt.getGroupBy()) {
-            addColumnRef(col, tableNames, result);
+            String resolved = resolveAliasInString(col, aliasToTable);
+            addColumnRef(resolved, tableNames, aliasToTable, result);
         }
 
-        // ORDER BY 列
+        // ORDER BY 列（解析别名）
         for (ASTNode.SelectStmt.OrderItem item : stmt.getOrderBy()) {
-            addColumnRef(item.getColumn(), tableNames, result);
+            String resolved = resolveAliasInString(item.getColumn(), aliasToTable);
+            addColumnRef(resolved, tableNames, aliasToTable, result);
         }
 
         return result;
     }
 
-    /** 将单个列名（可能点限定）加入对应表的需求集 */
+    /** 将单个列名（可能点限定）加入对应表的需求集，解析别名前缀 */
     private void addColumnRef(String col, List<String> tableNames,
+                              Map<String, String> aliasToTable,
                               Map<String, Set<String>> result) {
         int dot = col.indexOf('.');
         if (dot > 0) {
-            String table = col.substring(0, dot);
+            String tablePart = col.substring(0, dot);
             String column = col.substring(dot + 1);
-            if (result.containsKey(table)) {
-                result.get(table).add(column);
+            String actualTable = aliasToTable.getOrDefault(tablePart, tablePart);
+            if (result.containsKey(actualTable)) {
+                result.get(actualTable).add(column);
             }
         } else {
             for (String t : tableNames) {
@@ -654,38 +676,49 @@ public class PlanGenerator {
         }
     }
 
-    /** 递归从表达式中收集所有列引用 */
+    /** 递归从表达式中收集所有列引用（解析别名前缀）*/
     private void collectColumnRefs(ASTNode expr, List<String> tableNames,
+                                   Map<String, String> aliasToTable,
                                    Map<String, Set<String>> result) {
         if (expr == null) {
             return;
         }
         if (expr instanceof ASTNode.IdentifierExpr col) {
-            addColumnRef(col.getName(), tableNames, result);
+            addColumnRef(col.getName(), tableNames, aliasToTable, result);
         } else if (expr instanceof ASTNode.BinaryExpr bin) {
-            collectColumnRefs(bin.getLeft(), tableNames, result);
-            collectColumnRefs(bin.getRight(), tableNames, result);
+            collectColumnRefs(bin.getLeft(), tableNames, aliasToTable, result);
+            collectColumnRefs(bin.getRight(), tableNames, aliasToTable, result);
         } else if (expr instanceof ASTNode.UnaryExpr un) {
-            collectColumnRefs(un.getOperand(), tableNames, result);
+            collectColumnRefs(un.getOperand(), tableNames, aliasToTable, result);
         }
     }
 
     /**
      * 获取 SELECT 列清单：优先使用语义分析阶段已展开的结果，
-     * 否则自行展开 SELECT *。
+     * 否则自行展开 SELECT *。解析别名前缀为实际表名。
      */
-    private List<String> expandColumns(ASTNode.SelectStmt stmt) {
-        // 优先使用语义分析器展开后的列清单
+    private List<String> expandColumns(ASTNode.SelectStmt stmt,
+                                       Map<String, String> aliasToTable) {
+        // 优先使用语义分析器展开后的列清单（解析别名前缀）
         if (analyzer != null) {
             List<String> expanded = analyzer.getExpandedColumns(stmt);
             if (expanded != null) {
-                return expanded;
+                List<String> resolved = new ArrayList<>();
+                for (String col : expanded) {
+                    resolved.add(resolveAliasInString(col, aliasToTable));
+                }
+                return resolved;
             }
         }
         // 退化为自行展开
         List<String> selectList = stmt.getSelectList();
         if (selectList.size() != 1 || !"*".equals(selectList.get(0))) {
-            return selectList;
+            // 解析别名前缀
+            List<String> resolved = new ArrayList<>();
+            for (String col : selectList) {
+                resolved.add(resolveAliasInString(col, aliasToTable));
+            }
+            return resolved;
         }
         List<String> allColumns = catalog.getColumns(stmt.getTableName());
         return allColumns == null ? new ArrayList<>() : allColumns;
@@ -707,17 +740,79 @@ public class PlanGenerator {
     }
 
     /**
-     * 收集 SELECT 清单中出现的所有聚合函数（保持出现顺序）。
+     * 收集 SELECT 清单中出现的所有聚合函数（保持出现顺序，解析别名）。
      * 用于 GroupByPlan 的 aggregates 字段，执行器据此对每组计算聚合值。
      */
-    private List<String> collectAggregates(ASTNode.SelectStmt stmt) {
+    private List<String> collectAggregates(ASTNode.SelectStmt stmt,
+                                           Map<String, String> aliasToTable) {
         List<String> result = new ArrayList<>();
         for (String column : stmt.getSelectList()) {
             if (isAggregate(column)) {
-                result.add(column);
+                result.add(resolveAliasInString(column, aliasToTable));
             }
         }
         return result;
+    }
+
+    // ========== 别名解析 ==========
+
+    /**
+     * 递归将表达式树中的别名限定列引用替换为实际表名限定。
+     * 如 s.id（s 是 student 的别名）→ student.id。
+     * 仅替换 aliasToTable 中已注册的别名前缀，非别名的点限定名保持原样。
+     */
+    private ASTNode resolveAliases(ASTNode expr, Map<String, String> aliasToTable) {
+        if (expr == null) {
+            return null;
+        }
+        if (expr instanceof ASTNode.IdentifierExpr id) {
+            String name = id.getName();
+            int dot = name.indexOf('.');
+            if (dot > 0) {
+                String prefix = name.substring(0, dot);
+                if (aliasToTable.containsKey(prefix)) {
+                    String actualTable = aliasToTable.get(prefix);
+                    String column = name.substring(dot + 1);
+                    return new ASTNode.IdentifierExpr(id.getLine(), id.getCol(),
+                            actualTable + "." + column);
+                }
+            }
+            return id;
+        }
+        if (expr instanceof ASTNode.BinaryExpr bin) {
+            return new ASTNode.BinaryExpr(bin.getLine(), bin.getCol(), bin.getOp(),
+                    resolveAliases(bin.getLeft(), aliasToTable),
+                    resolveAliases(bin.getRight(), aliasToTable));
+        }
+        if (expr instanceof ASTNode.UnaryExpr un) {
+            return new ASTNode.UnaryExpr(un.getLine(), un.getCol(), un.getOp(),
+                    resolveAliases(un.getOperand(), aliasToTable));
+        }
+        return expr;
+    }
+
+    /**
+     * 将字符串形式的列引用中的别名前缀替换为实际表名。
+     * 支持聚合函数参数：SUM(s.score) → SUM(student.score)。
+     * COUNT(*) 不含列引用，原样返回。
+     */
+    private String resolveAliasInString(String name, Map<String, String> aliasToTable) {
+        if (AggregateFunction.isAggregate(name)) {
+            AggregateFunction agg = AggregateFunction.parse(name);
+            if (agg.isCountStar()) {
+                return name;
+            }
+            String resolvedArg = resolveAliasInString(agg.getArgument(), aliasToTable);
+            return agg.getName() + "(" + resolvedArg + ")";
+        }
+        int dot = name.indexOf('.');
+        if (dot > 0) {
+            String prefix = name.substring(0, dot);
+            if (aliasToTable.containsKey(prefix)) {
+                return aliasToTable.get(prefix) + "." + name.substring(dot + 1);
+            }
+        }
+        return name;
     }
 
     // ========== 条件优化入口 ==========
