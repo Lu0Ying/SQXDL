@@ -42,9 +42,14 @@ public final class AggregateFunction {
 
     /**
      * 尝试解析投影项字符串为聚合函数调用。
+     * <p>
+     * 语义：不匹配聚合函数调用格式（非 FUNC(arg) 形式）时返回 null，
+     * 表示该项不是聚合函数调用。匹配格式但函数名不支持或参数不合法时
+     * 抛出 IllegalArgumentException，由调用方转为用户可见的错误信息。
      *
      * @param column 投影项字符串，如 "SUM(age)"、"COUNT(*)"、"name"
-     * @return 聚合函数对象；非聚合项返回 null
+     * @return 聚合函数对象；非聚合项（不匹配 FUNC(arg) 格式）返回 null
+     * @throws IllegalArgumentException 匹配聚合函数调用格式但函数名不支持或参数不合法时抛出
      */
     public static AggregateFunction parse(String column) {
         if (column == null || column.isEmpty()) {
@@ -52,32 +57,42 @@ public final class AggregateFunction {
         }
         Matcher m = AGG_PATTERN.matcher(column);
         if (!m.matches()) {
-            return null;
+            return null;  // 不是 FUNC(arg) 形式，不是聚合函数调用
         }
         String funcName = m.group(1).toUpperCase();
         String arg = m.group(2);
-        // 只识别支持的聚合函数名
+        // 校验函数名是否支持
         if (!funcName.equals(COUNT) && !funcName.equals(SUM)
                 && !funcName.equals(AVG) && !funcName.equals(MIN)
                 && !funcName.equals(MAX)) {
-            return null;
+            throw new IllegalArgumentException(
+                    "不支持的聚合函数: " + funcName + "（仅支持 COUNT/SUM/AVG/MIN/MAX）");
         }
         // COUNT 的参数可以是 * 或列名；其余函数参数必须是列名
         if (funcName.equals(COUNT)) {
             return new AggregateFunction(COUNT, arg);
         }
         if ("*".equals(arg)) {
-            return null;  // SUM/AVG/MIN/MAX 不接受 * 参数
+            throw new IllegalArgumentException(
+                    "聚合函数 " + funcName + " 不接受 * 参数，必须指定列名");
         }
         return new AggregateFunction(funcName, arg);
     }
 
     /**
-     * 判断投影项是否为聚合函数调用。
-     * 等价于 {@code parse(column) != null}。
+     * 判断投影项是否为聚合函数调用格式（FUNC(arg) 形式）。
+     * <p>
+     * 只做格式匹配，不校验函数名和参数的合法性。
+     * 用于安全地判断"看起来像聚合函数"而不会抛异常的场景。
+     *
+     * @param column 投影项字符串
+     * @return true 表示匹配聚合函数调用格式
      */
     public static boolean isAggregate(String column) {
-        return parse(column) != null;
+        if (column == null || column.isEmpty()) {
+            return false;
+        }
+        return AGG_PATTERN.matcher(column).matches();
     }
 
     /** 函数名（大写）：COUNT/SUM/AVG/MIN/MAX */

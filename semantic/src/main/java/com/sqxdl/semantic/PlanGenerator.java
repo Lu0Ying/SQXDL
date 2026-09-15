@@ -594,8 +594,9 @@ public class PlanGenerator {
 
         // SELECT 清单中的列
         for (String col : selectList) {
-            AggregateFunction agg = AggregateFunction.parse(col);
-            if (agg != null) {
+            if (AggregateFunction.isAggregate(col)) {
+                // 聚合函数：语义分析阶段已校验合法性，此处安全解析
+                AggregateFunction agg = AggregateFunction.parse(col);
                 if (agg.isCountStar()) {
                     // COUNT(*) 需要所有表的列（执行器要数行数）
                     for (String t : tableNames) {

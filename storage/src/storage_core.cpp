@@ -1,3 +1,4 @@
+#include <chrono>
 #include <iostream>
 #include <string>
 #include "nlohmann/json.hpp"
@@ -34,6 +35,8 @@ int main()
         {
             break;
         }
+
+        const auto start_time = std::chrono::steady_clock::now();
 
         nlohmann::json result;
         try
@@ -122,6 +125,11 @@ int main()
                 {"type", "error"},
                 {"error", {{"code", "INTERNAL_ERROR"}, {"message", "Unknown error"}}}};
         }
+
+        const auto end_time = std::chrono::steady_clock::now();
+        result["time"] = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             end_time - start_time)
+                             .count();
 
         std::cout << result.dump() << std::endl;
     }

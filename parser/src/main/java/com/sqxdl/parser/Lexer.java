@@ -49,22 +49,28 @@ public class Lexer {
      */
     public Token nextToken() {
         skipWhitespaceAndComments();
+        //如果pos大于长度返回end of file
         if (pos >= src.length()) {
             return new Token(Token.Type.EOF, "", line, col);
         }
         char c = src.charAt(pos);
+        //是字母或者下划线就识别成word
         if (isLetter(c) || c == '_') {
             return readWord();
         }
+        //是数字就识别成digit
         if (isDigit(c)) {
             return readNumber();
         }
+        //转义'，实现'字符串'的识别
         if (c == '\'') {
             return readString();
         }
+        //识别操作符
         if (isOperatorStart(c)) {
             return readOperator();
         }
+        //识别终结符
         if (isDelimiter(c)) {
             int startLine = line;
             int startCol = col;
@@ -95,20 +101,25 @@ public class Lexer {
      * 支持行注释 "-- ..."（到行尾）与块注释 "/* ... *\/"（可跨行）。
      */
     private void skipWhitespaceAndComments() {
+        //未扫描到语句末尾时继续进行扫描
         while (pos < src.length()) {
             char c = src.charAt(pos);
+            //换行的话列重置，行加一
             if (c == '\n') {
                 line++;
                 col = 1;
                 pos++;
+                //处理制表符，回车，空格，行加一，列重置
             } else if (c == ' ' || c == '\t' || c == '\r') {
                 pos++;
                 col++;
+                //连着两个--，注释整行
             } else if (c == '-' && pos + 1 < src.length() && src.charAt(pos + 1) == '-') {
                 // 行注释：吞掉到行尾为止的所有字符（换行符留给下一轮循环统一处理）
                 while (pos < src.length() && src.charAt(pos) != '\n') {
                     pos++;
                 }
+                //块注释/*
             } else if (c == '/' && pos + 1 < src.length() && src.charAt(pos + 1) == '*') {
                 skipBlockComment();
             } else {
@@ -125,6 +136,7 @@ public class Lexer {
         col += 2;
         while (pos < src.length()) {
             if (src.charAt(pos) == '*' && pos + 1 < src.length() && src.charAt(pos + 1) == '/') {
+                //pos+2以跳过/*这两个符号
                 pos += 2;
                 col += 2;
                 return;
@@ -153,8 +165,10 @@ public class Lexer {
         // 点限定标识符：t1.id 整体作为一个 IDENTIFIER，语义层按 '.' 拆分表名与列名
         if (pos + 1 < src.length() && src.charAt(pos) == '.'
                 && (isLetter(src.charAt(pos + 1)) || src.charAt(pos + 1) == '_')) {
+            //pos+1,col+1以跳过点号（.）
             pos++;
             col++;
+            //一直读取直到末尾
             while (pos < src.length() && isWordChar(src.charAt(pos))) {
                 pos++;
                 col++;
@@ -162,6 +176,7 @@ public class Lexer {
             return new Token(Token.Type.IDENTIFIER, src.substring(start, pos), startLine, startCol);
         }
         String word = src.substring(start, pos);
+        //将单词全部大写
         String upper = word.toUpperCase();
         if (KEYWORDS.contains(upper)) {
             return new Token(Token.Type.KEYWORD, word, startLine, startCol);

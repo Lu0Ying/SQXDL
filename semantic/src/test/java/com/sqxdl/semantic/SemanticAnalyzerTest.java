@@ -351,6 +351,32 @@ class SemanticAnalyzerTest {
         assertTrue(ex.getMessage().contains("已存在"));
     }
 
+    @Test
+    void createTable_duplicateColumnName_throwsException() {
+        // CREATE TABLE course (cid INT, cid VARCHAR) —— 列名 cid 重复
+        ASTNode.CreateTableStmt stmt = new ASTNode.CreateTableStmt(
+                1, 1, "course",
+                Arrays.asList(
+                        new ASTNode.CreateTableStmt.ColumnDef("cid", "INT"),
+                        new ASTNode.CreateTableStmt.ColumnDef("cid", "VARCHAR"))
+        );
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("重复"),
+                "应提示列名重复，实际: " + ex.getMessage());
+    }
+
+    @Test
+    void createTable_emptyColumns_throwsException() {
+        // CREATE TABLE empty_table () —— 无列定义
+        ASTNode.CreateTableStmt stmt = new ASTNode.CreateTableStmt(
+                1, 1, "empty_table",
+                List.of()
+        );
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("至少需要定义一列"),
+                "应提示至少需要定义一列，实际: " + ex.getMessage());
+    }
+
     // ========== 嵌套表达式 ==========
 
     @Test
@@ -702,6 +728,40 @@ class SemanticAnalyzerTest {
         assertDoesNotThrow(() -> analyzer.analyze(stmt));
     }
 
+    // ---------- GROUP BY 语义规则 ----------
+
+    @Test
+    void groupBy_nonAggregateColumnNotInGroupBy_throwsException() {
+        // SELECT name, SUM(age) FROM student GROUP BY age
+        // name 不在 GROUP BY 中，应报错
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("name", "SUM(age)"), null,
+                List.of(), List.of("age"), List.of());
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("必须出现在 GROUP BY 中"),
+                "应提示非聚合列必须出现在 GROUP BY 中，实际: " + ex.getMessage());
+    }
+
+    @Test
+    void aggregateWithoutGroupBy_hasNonAggregateColumn_throwsException() {
+        // SELECT id, SUM(age) FROM student（无 GROUP BY 但含聚合函数）
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("id", "SUM(age)"), null,
+                List.of(), List.of(), List.of());
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("必须出现在 GROUP BY 中"),
+                "应提示非聚合列必须出现在 GROUP BY 中，实际: " + ex.getMessage());
+    }
+
+    @Test
+    void groupBy_allNonAggregateColumnsInGroupBy_succeeds() {
+        // SELECT age, SUM(score) FROM student GROUP BY age —— 合法
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("age", "SUM(score)"), null,
+                List.of(), List.of("age"), List.of());
+        assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
     // ========== ORDER BY 语义检查 ==========
 
     @Test
@@ -756,7 +816,7 @@ class SemanticAnalyzerTest {
 
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
                 1, 1, "student", Arrays.asList("name", "cname"), whereCond,
-                List.of(join), List.of("age"),
+                List.of(join), List.of("name", "cname"),
                 List.of(new ASTNode.SelectStmt.OrderItem("cname", "ASC")));
         assertDoesNotThrow(() -> analyzer.analyze(stmt));
     }
@@ -1016,6 +1076,7 @@ class SemanticAnalyzerTest {
     @Test
     void aggregate_multiTable_qualifiedColumn_succeeds() {
         // SELECT student.name, SUM(course.cid) FROM student JOIN course ON ...
+        // GROUP BY student.name —— 非聚合列必须在 GROUP BY 中
         catalog.createTableWithTypes("course", Arrays.asList(
                 new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
                 new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
@@ -1028,7 +1089,85 @@ class SemanticAnalyzerTest {
         ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
                 1, 1, "student",
                 Arrays.asList("student.name", "SUM(course.cid)"),
-                null, List.of(join), List.of(), List.of());
+                null, List.of(join), List.of("student.name"), List.of());
         assertDoesNotThrow(() -> analyzer.analyze(stmt));
+    }
+
+    // ========== 不合法聚合函数的错误提示测试 ==========
+
+    @Test
+    void unsupportedAggregateFunction_throwsError() {
+        // SELECT ABC(age) FROM student（不支持的函数名）
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("ABC(age)"), null,
+                List.of(), List.of(), List.of());
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("不支持的聚合函数"),
+                "应提示不支持的聚合函数，实际: " + ex.getMessage());
+    }
+
+    @Test
+    void sum_starArgument_throwsError() {
+        // SELECT SUM(*) FROM student（SUM 不接受 * 参数）
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("SUM(*)"), null,
+                List.of(), List.of(), List.of());
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("不接受 * 参数"),
+                "应提示不接受 * 参数，实际: " + ex.getMessage());
+    }
+
+    @Test
+    void avg_starArgument_throwsError() {
+        // SELECT AVG(*) FROM student
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("AVG(*)"), null,
+                List.of(), List.of(), List.of());
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("不接受 * 参数"),
+                "应提示不接受 * 参数，实际: " + ex.getMessage());
+    }
+
+    @Test
+    void min_starArgument_throwsError() {
+        // SELECT MIN(*) FROM student
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("MIN(*)"), null,
+                List.of(), List.of(), List.of());
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("不接受 * 参数"),
+                "应提示不接受 * 参数，实际: " + ex.getMessage());
+    }
+
+    @Test
+    void max_starArgument_throwsError() {
+        // SELECT MAX(*) FROM student
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student", Arrays.asList("MAX(*)"), null,
+                List.of(), List.of(), List.of());
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("不接受 * 参数"),
+                "应提示不接受 * 参数，实际: " + ex.getMessage());
+    }
+
+    @Test
+    void unsupportedAggregateFunction_multiTable_throwsError() {
+        // SELECT XYZ(student.age) FROM student JOIN course（多表场景）
+        catalog.createTableWithTypes("course", Arrays.asList(
+                new CatalogImpl.ColumnInfo("cid", CatalogImpl.DataType.INT),
+                new CatalogImpl.ColumnInfo("cname", CatalogImpl.DataType.VARCHAR)
+        ));
+        ASTNode.BinaryExpr onCond = new ASTNode.BinaryExpr(1, 30, "=",
+                new ASTNode.IdentifierExpr(1, 28, "student.id"),
+                new ASTNode.IdentifierExpr(1, 40, "course.cid"));
+        ASTNode.SelectStmt.JoinClause join = new ASTNode.SelectStmt.JoinClause("course", onCond);
+
+        ASTNode.SelectStmt stmt = new ASTNode.SelectStmt(
+                1, 1, "student",
+                Arrays.asList("XYZ(student.age)"),
+                null, List.of(join), List.of(), List.of());
+        SqxdlException ex = assertThrows(SqxdlException.class, () -> analyzer.analyze(stmt));
+        assertTrue(ex.getMessage().contains("不支持的聚合函数"),
+                "应提示不支持的聚合函数，实际: " + ex.getMessage());
     }
 }

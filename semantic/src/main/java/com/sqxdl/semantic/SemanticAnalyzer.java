@@ -5,8 +5,10 @@ import com.sqxdl.parser.SqxdlException;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 语义分析器（B 组）。
@@ -108,14 +110,69 @@ public class SemanticAnalyzer {
         for (ASTNode.SelectStmt.OrderItem item : stmt.getOrderBy()) {
             resolveColumn(item.getColumn(), tableNames, stmt);
         }
+
+        // GROUP BY 语义规则检查
+        checkGroupBySemantics(stmt, tableNames);
+    }
+
+    /**
+     * GROUP BY 语义规则检查。
+     * <p>
+     * 规则：
+     * <ul>
+     *   <li>有 GROUP BY 时，SELECT 中的非聚合列必须出现在 GROUP BY 中</li>
+     *   <li>无 GROUP BY 但 SELECT 含聚合函数时，SELECT 中不能有非聚合列</li>
+     * </ul>
+     */
+    private void checkGroupBySemantics(ASTNode.SelectStmt stmt, List<String> tableNames) {
+        List<String> selectList = expandedSelectLists.get(stmt);
+        if (selectList == null) {
+            return;
+        }
+
+        boolean hasAggregate = false;
+        List<String> nonAggregateColumns = new ArrayList<>();
+        for (String col : selectList) {
+            if (AggregateFunction.isAggregate(col)) {
+                hasAggregate = true;
+            } else {
+                nonAggregateColumns.add(col);
+            }
+        }
+
+        if (stmt.getGroupBy().isEmpty()) {
+            // 无 GROUP BY 但有聚合函数：SELECT 中不能有非聚合列
+            if (hasAggregate && !nonAggregateColumns.isEmpty()) {
+                throw error("含有聚合函数的查询中，SELECT 的非聚合列 "
+                        + nonAggregateColumns + " 必须出现在 GROUP BY 中", stmt);
+            }
+        } else {
+            // 有 GROUP BY：SELECT 中的非聚合列必须出现在 GROUP BY 中
+            Set<String> groupByCols = new HashSet<>();
+            for (String g : stmt.getGroupBy()) {
+                // 点限定列名取纯列名
+                groupByCols.add(g.contains(".") ? g.substring(g.indexOf('.') + 1) : g);
+            }
+            for (String col : nonAggregateColumns) {
+                String bareCol = col.contains(".")
+                        ? col.substring(col.indexOf('.') + 1) : col;
+                if (!groupByCols.contains(bareCol)) {
+                    throw error("SELECT 中的非聚合列 " + col
+                            + " 必须出现在 GROUP BY 中", stmt);
+                }
+            }
+        }
     }
 
     private void checkSelectColumns(String tableName, List<String> columns, ASTNode node) {
         for (String col : columns) {
-            AggregateFunction agg = AggregateFunction.parse(col);
-            if (agg != null) {
-                // 聚合项：校验参数列存在性与类型合法性
-                checkAggregateArg(agg, List.of(tableName), node);
+            if (AggregateFunction.isAggregate(col)) {
+                try {
+                    AggregateFunction agg = AggregateFunction.parse(col);
+                    checkAggregateArg(agg, List.of(tableName), node);
+                } catch (IllegalArgumentException e) {
+                    throw error(e.getMessage(), node);
+                }
                 continue;
             }
             if (!catalog.columnExists(tableName, col)) {
@@ -130,10 +187,13 @@ public class SemanticAnalyzer {
      */
     private void checkSelectColumns(List<String> tableNames, List<String> columns, ASTNode node) {
         for (String col : columns) {
-            AggregateFunction agg = AggregateFunction.parse(col);
-            if (agg != null) {
-                // 聚合项：校验参数列存在性与类型合法性
-                checkAggregateArg(agg, tableNames, node);
+            if (AggregateFunction.isAggregate(col)) {
+                try {
+                    AggregateFunction agg = AggregateFunction.parse(col);
+                    checkAggregateArg(agg, tableNames, node);
+                } catch (IllegalArgumentException e) {
+                    throw error(e.getMessage(), node);
+                }
                 continue;
             }
             resolveColumn(col, tableNames, node);
@@ -289,6 +349,19 @@ public class SemanticAnalyzer {
     private void analyzeCreateTableStmt(ASTNode.CreateTableStmt stmt) {
         if (catalog.tableExists(stmt.getTableName())) {
             throw error("表 " + stmt.getTableName() + " 已存在", stmt);
+        }
+        // 检查空表：至少需要一列
+        List<ASTNode.CreateTableStmt.ColumnDef> columns = stmt.getColumns();
+        if (columns == null || columns.isEmpty()) {
+            throw error("建表语句至少需要定义一列", stmt);
+        }
+        // 检查列名重复
+        Set<String> seen = new HashSet<>();
+        for (ASTNode.CreateTableStmt.ColumnDef col : columns) {
+            String colName = col.getName();
+            if (!seen.add(colName)) {
+                throw error("列名 " + colName + " 重复", stmt);
+            }
         }
     }
 
