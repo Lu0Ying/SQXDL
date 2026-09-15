@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cmath>
 #include <iostream>
 #include <string>
 #include "nlohmann/json.hpp"
@@ -126,10 +127,13 @@ int main()
                 {"error", {{"code", "INTERNAL_ERROR"}, {"message", "Unknown error"}}}};
         }
 
+        // 高精度计时：steady_clock 是单调时钟（不受系统时间调整影响），
+        // 按其原生亚毫秒精度取差值后换算为毫秒小数；四舍五入到微秒，
+        // 避免浮点误差在 JSON 中产生 9.943999999 一类的长尾小数
         const auto end_time = std::chrono::steady_clock::now();
-        result["time"] = std::chrono::duration_cast<std::chrono::milliseconds>(
-                             end_time - start_time)
-                             .count();
+        const double elapsed_ms =
+            std::chrono::duration<double, std::milli>(end_time - start_time).count();
+        result["time"] = std::round(elapsed_ms * 1000.0) / 1000.0;
 
         std::cout << result.dump() << std::endl;
     }
