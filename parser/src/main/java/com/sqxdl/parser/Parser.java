@@ -24,6 +24,9 @@ public class Parser {
     private static final Set<String> ADD_OPS = Set.of("+", "-");
     private static final Set<String> MUL_OPS = Set.of("*", "/");
 
+    /** 支持的内置聚合函数（SELECT 投影项）：名字按 IDENTIFIER 词法切出，非关键字 */
+    private static final Set<String> AGG_FUNCTIONS = Set.of("COUNT", "SUM", "AVG", "MIN", "MAX");
+
     private final Lexer lexer;
 
     /** 向前看缓存：当前待处理的 Token，初始为第一个 Token */
@@ -324,10 +327,10 @@ public class Parser {
 
     /**
      * 解析查询列清单：列名 (逗号 列名)*，或 SELECT * 时按约定存单元素 ["*"]。
-     * 支持聚合函数 COUNT(*)：产出虚拟列名 "COUNT(*)"（大小写归一），
-     * 语义层跳过其列校验，执行层在 GROUP BY 分组时计算行数。
+     * 支持聚合函数（COUNT/SUM/AVG/MIN/MAX，见 {@link #parseSelectItem()}），
+     * 归一化为字符串形式如 "COUNT(*)"、"SUM(age)"，语义层按字符串解析聚合调用。
      *
-     * @return 列名列表（可含聚合项 "COUNT(*)"）
+     * @return 列名列表（可含聚合项，如 "COUNT(*)"、"SUM(age)"）
      */
     private List<String> parseSelectList() {
         List<String> columns = new ArrayList<>();
@@ -345,22 +348,50 @@ public class Parser {
     }
 
     /**
-     * 解析单个投影项：普通列名 或 聚合函数 COUNT(*)。
-     * COUNT 按 IDENTIFIER 词法产出（非关键字），后跟 "(" "*" ")" 即聚合调用；
-     * 其余函数名或不带 * 参数的写法均按语法错误拒绝。
+     * 解析单个投影项：普通列名 或 聚合函数调用。
+     * <p>
+     * 聚合函数（COUNT/SUM/AVG/MIN/MAX）按 IDENTIFIER 词法产出（非关键字），
+     * 后跟 "(" 参数 ")" 即聚合调用，归一化为字符串形式放入 selectList：
+     * <pre>
+     *   COUNT(*)        → "COUNT(*)"   （* 参数仅 COUNT 允许）
+     *   COUNT(col)      → "COUNT(col)"
+     *   SUM(student.age)→ "SUM(student.age)"（点限定列名整体为一个 IDENTIFIER）
+     * </pre>
+     * 参数只允许单个列名或 *；嵌套聚合（SUM(SUM(x))）与表达式参数（SUM(x+1)）均按语法错误拒绝。
+     * 函数名大小写不敏感（sum/Sum/SUM 均识别），归一化为大写；列名保留原始大小写。
      *
-     * @return 列名或虚拟聚合列名 "COUNT(*)"
+     * @return 列名或归一化后的聚合列名，如 "SUM(age)"
      */
     private String parseSelectItem() {
         Token item = expect(Token.Type.IDENTIFIER);
         if (peek().getType() == Token.Type.DELIMITER && "(".equals(peek().getLexeme())) {
-            if (!"COUNT".equalsIgnoreCase(item.getLexeme())) {
-                throw syntaxError(item, "COUNT(*)（暂仅支持 COUNT 聚合）");
+            String funcName = item.getLexeme().toUpperCase();
+            if (!AGG_FUNCTIONS.contains(funcName)) {
+                throw syntaxError(item, "不支持的聚合函数: " + item.getLexeme()
+                        + "（支持 COUNT/SUM/AVG/MIN/MAX）");
             }
             advance(); // (
-            expectOperator("*");
-            expectDelimiter(")");
-            return "COUNT(*)";
+            Token arg = peek();
+            if (arg.getType() == Token.Type.OPERATOR && "*".equals(arg.getLexeme())) {
+                if (!"COUNT".equals(funcName)) {
+                    throw syntaxError(arg, "只有 COUNT 支持 * 参数");
+                }
+                advance();
+                expectDelimiter(")");
+                return "COUNT(*)";
+            }
+            if (arg.getType() == Token.Type.IDENTIFIER) {
+                String argName = arg.getLexeme();
+                advance();
+                // 聚合函数不可嵌套：SUM(SUM(age)) 中参数后紧跟 "("
+                if (peek().getType() == Token.Type.DELIMITER && "(".equals(peek().getLexeme())) {
+                    throw syntaxError(peek(), "聚合函数不可嵌套");
+                }
+                // 参数只能是单个列名（可含点限定），后必须紧跟 ")"：SUM(age+1) 在此被拒绝
+                expectDelimiter(")");
+                return funcName + "(" + argName + ")";
+            }
+            throw syntaxError(arg, "聚合函数参数必须是 * 或列名");
         }
         return item.getLexeme();
     }

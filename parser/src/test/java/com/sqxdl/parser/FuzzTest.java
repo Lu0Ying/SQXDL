@@ -109,4 +109,35 @@ class FuzzTest {
                                 + " GROUP BY " + col
                                 + " ORDER BY " + col + " DESC");
     }
+
+    /**
+     * 属性 5：聚合函数模板 SQL 随机填充（SUM/AVG/MIN/MAX/COUNT，参数列名或 COUNT 的 *），
+     * 随机撞关键字等边界仍只允许统一异常，不崩溃。
+     */
+    @Property(tries = 300)
+    void aggregateSqlParsesOrThrowsSqxdlException(@ForAll("aggregateSql") String sql) {
+        try {
+            new Parser(new Lexer(sql)).parseAll();
+        } catch (SqxdlException expected) {
+            // 随机标识符撞关键字等边界情况：统一异常类型，允许
+        }
+    }
+
+    /**
+     * 生成器：随机拼 SELECT 聚合函数 + GROUP BY。
+     * 函数从 SUM/AVG/MIN/MAX/COUNT 随机取；COUNT 随机使用 * 或列名参数。
+     */
+    @Provide
+    Arbitrary<String> aggregateSql() {
+        Arbitrary<String> word = Arbitraries.strings()
+                .withChars("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_")
+                .ofMinLength(1).ofMaxLength(10);
+        Arbitrary<String> func = Arbitraries.of("SUM", "AVG", "MIN", "MAX", "COUNT");
+        Arbitrary<Boolean> star = Arbitraries.of(true, false);
+        return Combinators.combine(word, word, func, star)
+                .as((col, arg, f, s) -> {
+                    String param = (s && f.equals("COUNT")) ? "*" : arg;
+                    return "SELECT " + col + ", " + f + "(" + param + ") FROM t GROUP BY " + col;
+                });
+    }
 }

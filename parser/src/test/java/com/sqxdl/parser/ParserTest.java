@@ -774,4 +774,104 @@ class ParserTest {
         assertEquals(Token.Type.IDENTIFIER, ts.get(0).getType());
         assertEquals("t1.id", ts.get(0).getLexeme());
     }
+
+    // ---------- 聚合函数（PARSER_REQUIREMENTS.md：SUM/AVG/MIN/MAX/COUNT） ----------
+
+    @Test
+    void selectSumAggregate() {
+        // SUM：归一化为 "SUM(age)" 存入 selectList
+        ASTNode.SelectStmt stmt = (ASTNode.SelectStmt) parse("SELECT SUM(age) FROM t");
+        assertEquals(List.of("SUM(age)"), stmt.getSelectList());
+    }
+
+    @Test
+    void selectAvgAggregate() {
+        // AVG：归一化为 "AVG(age)"
+        ASTNode.SelectStmt stmt = (ASTNode.SelectStmt) parse("SELECT AVG(age) FROM t");
+        assertEquals(List.of("AVG(age)"), stmt.getSelectList());
+    }
+
+    @Test
+    void selectMinMaxAggregate() {
+        // MIN / MAX：参数可为任意列
+        ASTNode.SelectStmt stmt = (ASTNode.SelectStmt) parse(
+                "SELECT MIN(score), MAX(score) FROM t");
+        assertEquals(List.of("MIN(score)", "MAX(score)"), stmt.getSelectList());
+    }
+
+    @Test
+    void selectCountColumn() {
+        // COUNT(列名)：与 COUNT(*) 并存于同一清单
+        ASTNode.SelectStmt stmt = (ASTNode.SelectStmt) parse(
+                "SELECT COUNT(*), COUNT(age) FROM t");
+        assertEquals(List.of("COUNT(*)", "COUNT(age)"), stmt.getSelectList());
+    }
+
+    @Test
+    void selectAggregateMixedWithColumn() {
+        // 聚合与普通列混合（GROUP BY 场景）：按书写顺序归一化
+        ASTNode.SelectStmt stmt = (ASTNode.SelectStmt) parse(
+                "SELECT grade, COUNT(*), SUM(age) FROM t GROUP BY grade");
+        assertEquals(List.of("grade", "COUNT(*)", "SUM(age)"), stmt.getSelectList());
+        assertEquals(List.of("grade"), stmt.getGroupBy());
+    }
+
+    @Test
+    void selectAggregateQualifiedColumn() {
+        // 点限定列名：student.age 整体为一个 IDENTIFIER，归一化为 "MAX(student.age)"
+        ASTNode.SelectStmt stmt = (ASTNode.SelectStmt) parse(
+                "SELECT student.name, MAX(student.age) FROM student");
+        assertEquals(List.of("student.name", "MAX(student.age)"), stmt.getSelectList());
+    }
+
+    @Test
+    void selectAggregateCaseInsensitive() {
+        // 函数名大小写不敏感：sum/Count 均识别并归一化为大写，列名保留原大小写
+        ASTNode.SelectStmt stmt = (ASTNode.SelectStmt) parse(
+                "SELECT sum(age), Count(*) FROM t");
+        assertEquals(List.of("SUM(age)", "COUNT(*)"), stmt.getSelectList());
+    }
+
+    @Test
+    void selectAggregateUnknownFunctionThrows() {
+        // 非聚合函数名：报"不支持的聚合函数"，列出支持范围
+        SqxdlException e = assertThrows(SqxdlException.class, () -> parse(
+                "SELECT ROUND(age) FROM t"));
+        assertTrue(e.getMessage().contains("不支持的聚合函数: ROUND"), e.getMessage());
+        assertTrue(e.getMessage().contains("COUNT/SUM/AVG/MIN/MAX"), "应给出支持的聚合函数列表");
+    }
+
+    @Test
+    void selectSumStarThrows() {
+        // * 参数仅 COUNT 允许：SUM(*) 报错
+        SqxdlException e = assertThrows(SqxdlException.class, () -> parse(
+                "SELECT SUM(*) FROM t"));
+        assertTrue(e.getMessage().contains("只有 COUNT 支持 * 参数"), e.getMessage());
+    }
+
+    @Test
+    void selectAggregateNestedThrows() {
+        // 聚合函数不可嵌套：SUM(SUM(age)) 报错
+        SqxdlException e = assertThrows(SqxdlException.class, () -> parse(
+                "SELECT SUM(SUM(age)) FROM t"));
+        assertTrue(e.getMessage().contains("聚合函数不可嵌套"), e.getMessage());
+    }
+
+    @Test
+    void selectAggregateExpressionArgThrows() {
+        // 参数不可为表达式：SUM(age+1) 报 unexpected token，期望 ')'
+        SqxdlException e = assertThrows(SqxdlException.class, () -> parse(
+                "SELECT SUM(age+1) FROM t"));
+        assertTrue(e.getMessage().contains("unexpected token '+'"), e.getMessage());
+        assertTrue(e.getMessage().contains(")"), "应给出期望 ')'");
+    }
+
+    @Test
+    void selectAggregateMissingParenThrows() {
+        // 缺右括号：SUM(age 后直接结束
+        SqxdlException e = assertThrows(SqxdlException.class, () -> parse(
+                "SELECT SUM(age FROM t"));
+        assertTrue(e.getMessage().contains("unexpected token 'FROM'"), e.getMessage());
+        assertTrue(e.getMessage().contains(")"), "应给出期望 ')'");
+    }
 }

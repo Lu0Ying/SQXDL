@@ -136,6 +136,7 @@ public class Lexer {
         col += 2;
         while (pos < src.length()) {
             if (src.charAt(pos) == '*' && pos + 1 < src.length() && src.charAt(pos + 1) == '/') {
+                //pos+2以跳过/*这两个符号
                 pos += 2;
                 col += 2;
                 return;
@@ -164,8 +165,10 @@ public class Lexer {
         // 点限定标识符：t1.id 整体作为一个 IDENTIFIER，语义层按 '.' 拆分表名与列名
         if (pos + 1 < src.length() && src.charAt(pos) == '.'
                 && (isLetter(src.charAt(pos + 1)) || src.charAt(pos + 1) == '_')) {
+            //pos+1,col+1以跳过点号（.）
             pos++;
             col++;
+            //一直读取直到末尾
             while (pos < src.length() && isWordChar(src.charAt(pos))) {
                 pos++;
                 col++;
@@ -173,6 +176,7 @@ public class Lexer {
             return new Token(Token.Type.IDENTIFIER, src.substring(start, pos), startLine, startCol);
         }
         String word = src.substring(start, pos);
+        //将单词全部大写
         String upper = word.toUpperCase();
         if (KEYWORDS.contains(upper)) {
             return new Token(Token.Type.KEYWORD, word, startLine, startCol);

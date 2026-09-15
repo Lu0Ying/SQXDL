@@ -137,4 +137,49 @@ class DiffTest {
             }
         }
     }
+
+    @Test
+    void aggregateFunctionsRunInH2() throws Exception {
+        // 聚合函数（PARSER_REQUIREMENTS.md）：SUM/AVG/MIN/MAX/COUNT 还原后交 H2 执行，
+        // 用工业级引擎交叉验证归一化字符串（selectList）语义正确
+        String script = """
+                CREATE TABLE student (grade INT, age INT, score INT);
+                INSERT INTO student (grade, age, score) VALUES (1, 20, 80);
+                INSERT INTO student (grade, age, score) VALUES (1, 30, 90);
+                INSERT INTO student (grade, age, score) VALUES (2, 10, 60);
+                SELECT SUM(age) FROM student;
+                SELECT AVG(age) FROM student;
+                SELECT MIN(age) FROM student;
+                SELECT MAX(score) FROM student;
+                SELECT COUNT(*) FROM student;
+                SELECT grade, COUNT(*), SUM(age) FROM student GROUP BY grade;
+                """;
+        try (Connection conn = newH2("agg")) {
+            runInH2(conn, parseScript(script));
+            try (Statement s = conn.createStatement()) {
+                // 全表聚合：SUM=60, AVG=20, MIN=10, MAX=90, COUNT=3
+                try (ResultSet rs = s.executeQuery("SELECT SUM(age), AVG(age), MIN(age), MAX(score), COUNT(*) FROM student")) {
+                    assertTrue(rs.next());
+                    assertEquals(60, rs.getInt(1));
+                    assertEquals(20.0, rs.getDouble(2), 1e-9);
+                    assertEquals(10, rs.getInt(3));
+                    assertEquals(90, rs.getInt(4));
+                    assertEquals(3, rs.getInt(5));
+                }
+                // 分组聚合：grade=1 → COUNT=2, SUM=50；grade=2 → COUNT=1, SUM=10
+                try (ResultSet rs = s.executeQuery(
+                        "SELECT grade, COUNT(*), SUM(age) FROM student GROUP BY grade ORDER BY grade")) {
+                    assertTrue(rs.next());
+                    assertEquals(1, rs.getInt(1));
+                    assertEquals(2, rs.getInt(2));
+                    assertEquals(50, rs.getInt(3));
+                    assertTrue(rs.next());
+                    assertEquals(2, rs.getInt(1));
+                    assertEquals(1, rs.getInt(2));
+                    assertEquals(10, rs.getInt(3));
+                    assertFalse(rs.next(), "应只有两个分组");
+                }
+            }
+        }
+    }
 }

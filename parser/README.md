@@ -89,7 +89,7 @@ String sql = SqlPrinter.print(stmt);   // SELECT * FROM t WHERE (age = 3)
 
 | 语句 | 语法 |
 |---|---|
-| SELECT | `SELECT 列清单 FROM 表名 [WHERE 条件]`，列清单支持 `*` |
+| SELECT | `SELECT 列清单 FROM 表名 [JOIN 表 ON 条件]* [WHERE 条件] [GROUP BY 列]* [ORDER BY 列 [ASC\|DESC]]*`，列清单支持 `*`、普通列名与聚合函数 |
 | INSERT | `INSERT INTO 表名 [(列清单)] VALUES (值清单)`，省略列清单 = 按建表顺序 |
 | UPDATE | `UPDATE 表名 SET 列 = 值 [, 列 = 值]* [WHERE 条件]` |
 | DELETE | `DELETE FROM 表名 [WHERE 条件]` |
@@ -102,6 +102,10 @@ WHERE 条件表达式按优先级解析（低 → 高）：
 逻辑与/或支持关键字（`AND`/`OR`）与符号（`&&`/`||`）两种写法，节点中统一规范化为 `AND`/`OR` 或保持 `&&`/`||` 原样。
 按文法 `not_expr -> NOT not_expr | comparison`，`NOT a = 1` 解析为 `NOT(a = 1)`；括号可改变结合结构，
 如 `a = 1 AND (b = 2 OR c = 3)`。文法细节见 [grammar.md](grammar.md)。
+
+投影项支持聚合函数（`PARSER_REQUIREMENTS.md`）：`COUNT(*)`、`COUNT(列)`、`SUM(列)`、`AVG(列)`、`MIN(列)`、`MAX(列)`，
+参数可为点限定列名 `表.列`。函数名大小写不敏感，归一化为大写字符串存入 `selectList`（如 `"SUM(age)"`）。
+`*` 参数仅 `COUNT` 允许；聚合不可嵌套（`SUM(SUM(x))` 报错）、参数不可为表达式（`SUM(x+1)` 报错）。
 
 其他约定：
 
@@ -185,6 +189,6 @@ Parser 在构建 WHERE 表达式树后立即做两层优化（后序遍历）：
 mvn -pl parser test
 ```
 
-`LexerTest`（23 例）覆盖五类 Token、注释、转义、行列号、拼写纠错与非法输入；`ParserTest`（77 例）覆盖语句解析（含 SHOW/DESCRIBE/DESC、DROP TABLE、JOIN、GROUP BY、ORDER BY）、表达式优先级（含课程示例 `a = 1 OR b = 2 AND c = 3`）、NOT/括号、列类型、常量折叠、逻辑简化、错误格式（`unexpected token` + 期望终结符列表）、错误恢复与多语句输入；`EdgeCaseTest`（22 例）集中覆盖词法、拼写纠错、表达式、SHOW/DROP 边界与错误恢复临界场景；`FuzzTest`（4 组 jqwik 属性测试，每组随机数百组输入）验证 Lexer/Parser 对任意输入只抛统一异常 `SqxdlException`、错误恒带 `[行:列]` 定位前缀、合法模板 SQL 不崩溃；`SqlPrinterTest`（8 例）验证规范 SQL 还原文本与 round-trip 稳定性；`DiffTest`（4 例）用 H2 内存库执行还原出的 SQL 做差分验证（CRUD 全流程、JOIN/GROUP BY/ORDER BY、常量折叠、转义字符串）。共 138 例。
+`LexerTest`（23 例）覆盖五类 Token、注释、转义、行列号、拼写纠错与非法输入；`ParserTest`（90 例）覆盖语句解析（含 SHOW/DESCRIBE/DESC、DROP TABLE、JOIN、GROUP BY、ORDER BY、聚合函数 COUNT/SUM/AVG/MIN/MAX）、表达式优先级（含课程示例 `a = 1 OR b = 2 AND c = 3`）、NOT/括号、列类型、常量折叠、逻辑简化、错误格式（`unexpected token` + 期望终结符列表）、错误恢复与多语句输入；`EdgeCaseTest`（22 例）集中覆盖词法、拼写纠错、表达式、SHOW/DROP 边界与错误恢复临界场景；`FuzzTest`（5 组 jqwik 属性测试，每组随机数百组输入）验证 Lexer/Parser 对任意输入只抛统一异常 `SqxdlException`、错误恒带 `[行:列]` 定位前缀、合法模板 SQL（含聚合函数模板）不崩溃；`SqlPrinterTest`（8 例）验证规范 SQL 还原文本与 round-trip 稳定性；`DiffTest`（5 例）用 H2 内存库执行还原出的 SQL 做差分验证（CRUD 全流程、JOIN/GROUP BY/ORDER BY、聚合函数、常量折叠、转义字符串）。共 152 例。
 
 > 测试依赖：`net.jqwik:jqwik:1.8.5`（模糊测试）、`com.h2database:h2:2.2.224`（差分验证），均 test scope，见 `parser/pom.xml`。模糊测试期间抓出并修复的真实缺陷：非法字符抛错未推进位置（错误恢复死循环风险）、`parseAll` 错误恢复未覆盖词法错误——现均已修复，词法/语法错误统一参与错误恢复。
