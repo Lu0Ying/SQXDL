@@ -25,9 +25,9 @@ storage_core.exe
 
 ```text
 > {"op":"createTable","table":"student","columns":[{"name":"id","type":"INT"},{"name":"name","type":"VARCHAR"}]}
-< {"success":true,"type":"rowcount","rowsAffected":0}
+< {"success":true,"type":"rowcount","rowsAffected":0,"time":0}
 > {"op":"showTables"}
-< {"success":true,"type":"resultset","columns":["table"],"rows":[["student"]]}
+< {"success":true,"type":"resultset","columns":["table"],"rows":[["student"]],"time":2}
 > exit
 （进程退出，无输出）
 ```
@@ -221,12 +221,20 @@ storage_core.exe
 **一行** JSON 结果（一行进、一行出），统一外层结构为：
 
 ```json
-{ "success": true, ... }   // 成功
-{ "success": false, ... }  // 失败
+{ "success": true, "type": "...", "time": 3, ... }    // 成功
+{ "success": false, "type": "error", "time": 1, ... } // 失败
 ```
 
 通过 `type` 字段区分结果种类，`type` 与 `op` 对应（查询类为 `resultset`，
 写操作类为 `rowcount`）。
+
+**`time` 字段**：每个返回结果（成功与失败均包含）都带一个 `time` 字段，为
+非负整数，单位为**毫秒（ms）**，记录存储核心处理该条 physic plan 的耗时——
+自读取到该行输入开始计时，覆盖 JSON 解析与计划执行的全过程，到结果生成完毕
+为止。该字段仅用于性能观测，调用方可忽略。
+
+> 说明：下文各结果示例为突出各 `type` 的专属字段，省略了通用的 `time` 字段；
+> 实际输出中每个结果均包含它。
 
 ### 2.1 SELECT：返回数据集
 
@@ -424,7 +432,7 @@ public class StorageClient implements AutoCloseable {
 try (StorageClient client = new StorageClient()) {
     String result = client.execute("{\"op\":\"showTables\"}");
     System.out.println(result);
-    // {"columns":["table"],"rows":[],"success":true,"type":"resultset"}
+    // {"columns":["table"],"rows":[],"success":true,"time":1,"type":"resultset"}
     // 可用 Jackson/Gson 解析后判断 success 字段与 error.code
 }
 ```
@@ -439,4 +447,5 @@ try (StorageClient client = new StorageClient()) {
 - **换行即协议**：每行必须以换行符结尾（`newLine()` 或 `\n`），空行会被服务忽略。
 - **结束务必发 `exit`**：否则需依赖关闭 stdin（`writer.close()` 触发 EOF）退出，
   显式发送 `exit` 最可靠。
-- 返回结果固定一行 JSON，`success=false` 时读取 `error.code` 做程序化处理。
+- 返回结果固定一行 JSON，`success=false` 时读取 `error.code` 做程序化处理；
+  每个结果都含 `time` 字段（本次处理耗时，单位 ms），可用于性能观测。
