@@ -50,15 +50,26 @@ public abstract class ASTNode {
         /** 连接子句：JOIN 的表与 ON 条件（onCond 已做常量折叠 / 逻辑简化） */
         public static class JoinClause {
             private final String tableName;
+            /** 表别名（FROM t AS x / JOIN t x）；无别名时为 null */
+            private final String alias;
             private final ASTNode onCond;
 
             public JoinClause(String tableName, ASTNode onCond) {
+                this(tableName, null, onCond);
+            }
+
+            public JoinClause(String tableName, String alias, ASTNode onCond) {
                 this.tableName = tableName;
+                this.alias = alias;
                 this.onCond = onCond;
             }
 
             public String getTableName() {
                 return tableName;
+            }
+
+            public String getAlias() {
+                return alias;
             }
 
             public ASTNode getOnCond() {
@@ -67,7 +78,8 @@ public abstract class ASTNode {
 
             @Override
             public String toString() {
-                return "JoinClause{table=" + tableName + ", on=" + onCond + "}";
+                return "JoinClause{table=" + tableName + (alias != null ? " alias=" + alias : "")
+                        + ", on=" + onCond + "}";
             }
         }
 
@@ -96,6 +108,8 @@ public abstract class ASTNode {
         }
 
         private final String tableName;
+        /** 表别名（FROM student s / FROM student AS s）；无别名时为 null */
+        private final String tableAlias;
         /** 查询列名列表；SELECT * 时约定为 ["*"]，展开由语义层负责 */
         private final List<String> selectList;
         /** WHERE 条件表达式；无 WHERE 子句时为 null */
@@ -111,8 +125,17 @@ public abstract class ASTNode {
                           List<String> selectList, ASTNode whereCond,
                           List<JoinClause> joins, List<String> groupBy,
                           List<OrderItem> orderBy) {
+            this(line, col, tableName, null,
+                    selectList, whereCond, joins, groupBy, orderBy);
+        }
+
+        public SelectStmt(int line, int col, String tableName, String tableAlias,
+                          List<String> selectList, ASTNode whereCond,
+                          List<JoinClause> joins, List<String> groupBy,
+                          List<OrderItem> orderBy) {
             super(line, col);
             this.tableName = tableName;
+            this.tableAlias = tableAlias;
             this.selectList = selectList;
             this.whereCond = whereCond;
             this.joins = joins;
@@ -122,6 +145,10 @@ public abstract class ASTNode {
 
         public String getTableName() {
             return tableName;
+        }
+
+        public String getTableAlias() {
+            return tableAlias;
         }
 
         public List<String> getSelectList() {

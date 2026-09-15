@@ -89,7 +89,7 @@ String sql = SqlPrinter.print(stmt);   // SELECT * FROM t WHERE (age = 3)
 
 | 语句 | 语法 |
 |---|---|
-| SELECT | `SELECT 列清单 FROM 表名 [JOIN 表 ON 条件]* [WHERE 条件] [GROUP BY 列]* [ORDER BY 列 [ASC\|DESC]]*`，列清单支持 `*`、普通列名与聚合函数 |
+| SELECT | `SELECT 列清单 FROM 表名 [AS 别名] [JOIN 表 [AS 别名] ON 条件]* [WHERE 条件] [GROUP BY 列]* [ORDER BY 列 [ASC\|DESC]]*`，列清单支持 `*`、普通列名与聚合函数；表别名 AS 可省略（`FROM student s`） |
 | INSERT | `INSERT INTO 表名 [(列清单)] VALUES (值清单)`，省略列清单 = 按建表顺序 |
 | UPDATE | `UPDATE 表名 SET 列 = 值 [, 列 = 值]* [WHERE 条件]` |
 | DELETE | `DELETE FROM 表名 [WHERE 条件]` |
@@ -121,13 +121,14 @@ WHERE 条件表达式按优先级解析（低 → 高）：
 
 | 节点 | 关键字段 / getter | 说明 |
 |---|---|---|
-| `SelectStmt` | `tableName`、`selectList`、`whereCond` | `whereCond` 无 WHERE 时为 `null` |
+| `SelectStmt` | `tableName`、`tableAlias`、`selectList`、`whereCond`、`joins`、`groupBy`、`orderBy` | `tableAlias` 为可选表别名（`FROM student s` / `AS s`），无别名时 `null`；`whereCond` 无 WHERE 时为 `null` |
 | `InsertStmt` | `tableName`、`columns`、`values` | `columns` 空 = 按建表顺序；`values` 为 `LiteralExpr` 列表 |
 | `UpdateStmt` | `tableName`、`assignments`、`whereCond` | `assignments` 为 `Map<String, LiteralExpr>`，保持 SET 书写顺序 |
 | `DeleteStmt` | `tableName`、`whereCond` | 同上，`whereCond` 可为 `null` |
 | `CreateTableStmt` | `tableName`、`columns` | `columns` 为 `List<ColumnDef>`（`ColumnDef` 含 `name` 与 `type`） |
 | `ShowStmt` | `target`、`tableName` | `target` ∈ `TABLES` / `TABLE`；`target=TABLE` 时 `tableName` 为表名，否则为 `null`。`DESCRIBE t` / `DESC t` 归一化为 `target=TABLE` |
 | `DropTableStmt` | `tableName` | 语义层据此删除指定表及其数据 |
+| `SelectStmt.JoinClause` | `tableName`、`alias`、`onCond` | 连接子句；`alias` 为可选表别名（`JOIN t AS x` / `JOIN t x`），无别名时 `null` |
 | `BinaryExpr` | `op`、`left`、`right` | 表达式节点，`left`/`right` 可为嵌套表达式 |
 | `UnaryExpr` | `op`、`operand` | 一元运算（`NOT`），`operand` 为被作用表达式 |
 | `IdentifierExpr` | `name` | 标识符（列名）引用，WHERE 中的列名一律用此节点 |
@@ -189,6 +190,6 @@ Parser 在构建 WHERE 表达式树后立即做两层优化（后序遍历）：
 mvn -pl parser test
 ```
 
-`LexerTest`（23 例）覆盖五类 Token、注释、转义、行列号、拼写纠错与非法输入；`ParserTest`（90 例）覆盖语句解析（含 SHOW/DESCRIBE/DESC、DROP TABLE、JOIN、GROUP BY、ORDER BY、聚合函数 COUNT/SUM/AVG/MIN/MAX）、表达式优先级（含课程示例 `a = 1 OR b = 2 AND c = 3`）、NOT/括号、列类型、常量折叠、逻辑简化、错误格式（`unexpected token` + 期望终结符列表）、错误恢复与多语句输入；`EdgeCaseTest`（22 例）集中覆盖词法、拼写纠错、表达式、SHOW/DROP 边界与错误恢复临界场景；`FuzzTest`（5 组 jqwik 属性测试，每组随机数百组输入）验证 Lexer/Parser 对任意输入只抛统一异常 `SqxdlException`、错误恒带 `[行:列]` 定位前缀、合法模板 SQL（含聚合函数模板）不崩溃；`SqlPrinterTest`（8 例）验证规范 SQL 还原文本与 round-trip 稳定性；`DiffTest`（5 例）用 H2 内存库执行还原出的 SQL 做差分验证（CRUD 全流程、JOIN/GROUP BY/ORDER BY、聚合函数、常量折叠、转义字符串）。共 152 例。
+`LexerTest`（23 例）覆盖五类 Token、注释、转义、行列号、拼写纠错与非法输入；`ParserTest`（93 例）覆盖语句解析（含 SHOW/DESCRIBE/DESC、DROP TABLE、JOIN、GROUP BY、ORDER BY、聚合函数 COUNT/SUM/AVG/MIN/MAX、表别名）、表达式优先级（含课程示例 `a = 1 OR b = 2 AND c = 3`）、NOT/括号、列类型、常量折叠、逻辑简化、错误格式（`unexpected token` + 期望终结符列表）、错误恢复与多语句输入；`EdgeCaseTest`（22 例）集中覆盖词法、拼写纠错、表达式、SHOW/DROP 边界与错误恢复临界场景；`FuzzTest`（5 组 jqwik 属性测试，每组随机数百组输入）验证 Lexer/Parser 对任意输入只抛统一异常 `SqxdlException`、错误恒带 `[行:列]` 定位前缀、合法模板 SQL（含聚合函数模板）不崩溃；`SqlPrinterTest`（9 例）验证规范 SQL 还原文本（含别名 AS 还原）与 round-trip 稳定性；`DiffTest`（5 例）用 H2 内存库执行还原出的 SQL 做差分验证（CRUD 全流程、JOIN/GROUP BY/ORDER BY、聚合函数、常量折叠、转义字符串）。共 157 例。
 
 > 测试依赖：`net.jqwik:jqwik:1.8.5`（模糊测试）、`com.h2database:h2:2.2.224`（差分验证），均 test scope，见 `parser/pom.xml`。模糊测试期间抓出并修复的真实缺陷：非法字符抛错未推进位置（错误恢复死循环风险）、`parseAll` 错误恢复未覆盖词法错误——现均已修复，词法/语法错误统一参与错误恢复。

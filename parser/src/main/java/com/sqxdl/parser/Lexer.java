@@ -23,6 +23,7 @@ public class Lexer {
             "SELECT", "FROM", "WHERE", "CREATE", "TABLE", "TABLES",
             "INSERT", "INTO", "VALUES", "DELETE", "UPDATE", "SET",
             "AND", "OR", "NOT", "TRUE", "FALSE",
+            "AS",
             "INT", "VARCHAR", "DOUBLE", "SHOW", "DROP",
             "DESCRIBE", "DESC",
             "JOIN", "ON", "GROUP", "BY", "ORDER", "ASC");
@@ -175,12 +176,14 @@ public class Lexer {
             }
             return new Token(Token.Type.IDENTIFIER, src.substring(start, pos), startLine, startCol);
         }
+        //没有.（点号）直接截取从起始位置到当前的字符串
         String word = src.substring(start, pos);
         //将单词全部大写
         String upper = word.toUpperCase();
         if (KEYWORDS.contains(upper)) {
             return new Token(Token.Type.KEYWORD, word, startLine, startCol);
         }
+        //尝试纠正拼写错误的关键词，纠正距离为一
         String corrected = correctSpelling(upper);
         if (corrected != null) {
             spellWarnings.add("[" + startLine + ":" + startCol + "] 拼写提示：将 '"
@@ -192,6 +195,7 @@ public class Lexer {
 
     /** 读数字常量：支持整数与小数（如 20、3.14） */
     private Token readNumber() {
+        //当前位置，当前行，当前列
         int start = pos;
         int startLine = line;
         int startCol = col;
@@ -223,6 +227,7 @@ public class Lexer {
         col++;
         StringBuilder value = new StringBuilder();
         while (true) {
+            //当前位置超过了字符串长度，单引号没闭合
             if (pos >= src.length()) {
                 throw new SqxdlException(startLine, startCol, "未闭合的字符串字面量");
             }
@@ -278,6 +283,7 @@ public class Lexer {
         if (upperWord.length() < 2) {
             return null;
         }
+        //遍历关键字进行比对
         for (String keyword : KEYWORDS) {
             if (editDistance(upperWord, keyword) == 1) {
                 return keyword;
@@ -290,17 +296,25 @@ public class Lexer {
     private static int editDistance(String a, String b) {
         int m = a.length();
         int n = b.length();
+        //prev用于存储上一行状态
         int[] prev = new int[n + 1];
+        //curr用于存储当前行状态
         int[] curr = new int[n + 1];
+        //初始化prev
         for (int j = 0; j <= n; j++) {
             prev[j] = j;
         }
+        //外层从1到m遍历传入的String a
         for (int i = 1; i <= m; i++) {
             curr[0] = i;
+            //内层从1到n遍历传入的String b
             for (int j = 1; j <= n; j++) {
+                //如果a的字符和b的字符相同则返回0.否则返回1
                 int cost = a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1;
+                //先比较“插入”和“删除”哪个更小，括号内部的东西，然后拿结果进行Math.min计算其与替换/匹配
                 curr[j] = Math.min(Math.min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
             }
+            //引入temp，将curr传给prev，进行数组空间的复用
             int[] tmp = prev;
             prev = curr;
             curr = tmp;

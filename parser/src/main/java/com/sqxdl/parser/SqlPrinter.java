@@ -52,9 +52,15 @@ public final class SqlPrinter {
         StringBuilder sb = new StringBuilder("SELECT ");
         sb.append(String.join(", ", s.getSelectList()));
         sb.append(" FROM ").append(s.getTableName());
+        if (s.getTableAlias() != null) {
+            sb.append(" AS ").append(s.getTableAlias());
+        }
         for (ASTNode.SelectStmt.JoinClause j : s.getJoins()) {
-            sb.append(" JOIN ").append(j.getTableName())
-                    .append(" ON ").append(expr(j.getOnCond()));
+            sb.append(" JOIN ").append(j.getTableName());
+            if (j.getAlias() != null) {
+                sb.append(" AS ").append(j.getAlias());
+            }
+            sb.append(" ON ").append(expr(j.getOnCond()));
         }
         if (s.getWhereCond() != null) {
             sb.append(" WHERE ").append(expr(s.getWhereCond()));

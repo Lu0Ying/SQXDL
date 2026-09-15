@@ -102,4 +102,20 @@ class SqlPrinterTest {
             assertEquals(first, second, "round-trip 还原不稳定: " + sql);
         }
     }
+
+    @Test
+    void tableAliasRestoredWithAs() {
+        // 表别名统一还原为 AS 形式：FROM student s → FROM student AS s
+        assertEquals("SELECT * FROM student AS s",
+                SqlPrinter.print(parseSingle("SELECT * FROM student s")));
+        assertEquals("SELECT * FROM student AS s WHERE (s.age > 18)",
+                SqlPrinter.print(parseSingle("SELECT * FROM student s WHERE s.age > 18")));
+        // JOIN 别名同样还原为 AS 形式
+        assertEquals("SELECT s.id FROM student AS s JOIN course AS c ON (s.id = c.sid)",
+                SqlPrinter.print(parseSingle(
+                        "SELECT s.id FROM student s JOIN course c ON s.id = c.sid")));
+        // round-trip 稳定性：带别名的还原结果再次解析还原不变
+        String first = SqlPrinter.print(parseSingle("SELECT * FROM student AS s"));
+        assertEquals(first, SqlPrinter.print(parseSingle(first)), "别名 round-trip 不稳定");
+    }
 }

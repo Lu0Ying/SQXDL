@@ -874,4 +874,41 @@ class ParserTest {
         assertTrue(e.getMessage().contains("unexpected token 'FROM'"), e.getMessage());
         assertTrue(e.getMessage().contains(")"), "应给出期望 ')'");
     }
+
+    // ---------- 表别名（FROM student s / AS s，JOIN 同理） ----------
+
+    @Test
+    void selectTableAliasWithoutAs() {
+        // 省略 AS：FROM student s
+        ASTNode.SelectStmt stmt = (ASTNode.SelectStmt) parse("SELECT * FROM student s");
+        assertEquals("student", stmt.getTableName());
+        assertEquals("s", stmt.getTableAlias());
+    }
+
+    @Test
+    void selectTableAliasWithAs() {
+        // 显式 AS：FROM student AS s
+        ASTNode.SelectStmt stmt = (ASTNode.SelectStmt) parse("SELECT * FROM student AS s");
+        assertEquals("student", stmt.getTableName());
+        assertEquals("s", stmt.getTableAlias());
+    }
+
+    @Test
+    void selectWithoutTableAlias() {
+        // 无别名：getTableAlias() 为 null
+        ASTNode.SelectStmt stmt = (ASTNode.SelectStmt) parse("SELECT * FROM student");
+        assertNull(stmt.getTableAlias());
+    }
+
+    @Test
+    void selectAliasWithWhereAndJoin() {
+        // 别名 + WHERE + JOIN 别名混用：后续子句关键字不会被误判为别名
+        ASTNode.SelectStmt stmt = (ASTNode.SelectStmt) parse(
+                "SELECT s.id FROM student s JOIN course AS c ON s.id = c.sid WHERE s.age > 18");
+        assertEquals("s", stmt.getTableAlias(), "FROM 表别名");
+        assertEquals(1, stmt.getJoins().size());
+        assertEquals("course", stmt.getJoins().get(0).getTableName());
+        assertEquals("c", stmt.getJoins().get(0).getAlias(), "JOIN 表别名");
+        assertEquals("s.id", stmt.getSelectList().get(0), "点限定列名与别名配合");
+    }
 }

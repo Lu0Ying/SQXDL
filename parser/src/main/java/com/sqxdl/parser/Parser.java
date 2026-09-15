@@ -188,6 +188,8 @@ public class Parser {
         List<String> columns = parseSelectList();
         expectKeyword("FROM");
         Token table = expect(Token.Type.IDENTIFIER);
+        // 可选表别名：FROM student s / FROM student AS s
+        String tableAlias = parseTableAlias();
         // JOIN 子句（可链式）：t1 JOIN t2 ON 条件 [JOIN t3 ON 条件 ...]
         List<ASTNode.SelectStmt.JoinClause> joins = new ArrayList<>();
         while (peek().getType() == Token.Type.KEYWORD
@@ -208,21 +210,41 @@ public class Parser {
         }
         finishStatement();
         return new ASTNode.SelectStmt(start.getLine(), start.getCol(),
-                table.getLexeme(), columns, whereCond, joins, groupBy, orderBy);
+                table.getLexeme(), tableAlias, columns, whereCond, joins, groupBy, orderBy);
     }
 
     /**
-     * 解析 JOIN 子句：JOIN 表名 ON 表达式。
+     * 解析可选表别名：`表名 AS 别名` 或 `表名 别名`（AS 可省略）；无别名返回 null。
+     * <p>
+     * 别名紧跟表名且为 IDENTIFIER；后续子句关键字（WHERE/JOIN/GROUP/ORDER/ON）在词法层
+     * 已分类为 KEYWORD，不会与 IDENTIFIER 混淆，因此不会被误当作别名。
+     *
+     * @return 别名词素；无别名时为 null
+     */
+    private String parseTableAlias() {
+        if (peek().getType() == Token.Type.KEYWORD && peek().getLexeme().equalsIgnoreCase("AS")) {
+            advance();
+            return expect(Token.Type.IDENTIFIER).getLexeme();
+        }
+        if (peek().getType() == Token.Type.IDENTIFIER) {
+            return advance().getLexeme();
+        }
+        return null;
+    }
+
+    /**
+     * 解析 JOIN 子句：JOIN 表名 [AS 别名] ON 表达式。
      * ON 条件参与编译期优化（fold），与 WHERE 分离存储，便于语义层谓词下推。
      *
-     * @return 连接子句（表名 + ON 条件）
+     * @return 连接子句（表名 + 可选别名 + ON 条件）
      */
     private ASTNode.SelectStmt.JoinClause parseJoinClause() {
         expectKeyword("JOIN");
         Token table = expect(Token.Type.IDENTIFIER);
+        String alias = parseTableAlias();
         expectKeyword("ON");
         ASTNode onCond = fold(parseExpr());
-        return new ASTNode.SelectStmt.JoinClause(table.getLexeme(), onCond);
+        return new ASTNode.SelectStmt.JoinClause(table.getLexeme(), alias, onCond);
     }
 
     /**
