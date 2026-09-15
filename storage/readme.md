@@ -339,13 +339,20 @@ storage_core.exe
 | 文件 | 内容 | 写回时机 |
 |---|---|---|
 | `catalog.json` | 表结构（表名 -> 列定义） | `createTable` / `deleteTable` |
-| `storage.db` | 表内行数据（按 4KB 页组织） | `insert` / `update` / `delete` / `deleteTable` |
+| `storage.db` | 表内行数据（按 4KB 堆页组织，行与页对齐） | `insert` / `update` / `delete` / `deleteTable` |
 
 - 表结构与行数据**分离存放**：`catalog.json` 只含 schema，不含任何行数据。
+- 行数据按「slotted 堆页 + 页链」组织：每行是该页内的一个元组，写入只追加到链尾页，
+  单行插入/更新/删除只改写 1~2 个页，**不会重写整张表**；页缓存（最近使用的 64 页）由缓冲池管理，
+  缺页时按需从磁盘读入，因此查询过程**不会把整库行数据读进内存**。
+- 行数据页由缓冲池在 LRU 淘汰或进程正常退出时写回磁盘；表 -> 数据页链的目录发生变化时立即落盘。
 - 进程启动后首次执行任一操作时会自动从上述文件恢复表结构与行数据，
   因此**重启进程后数据依然存在**；同一目录下多次运行等价于操作同一个库。
 - `deleteTable` 会回收该表占用的全部数据页并更新目录。
 - 存储目录不可访问、文件损坏等异常返回 `INTERNAL_ERROR`。
+- 单行序列化后长度上限为 4084 字节，超长行返回 `INTERNAL_ERROR`。
+- 注意：行数据文件格式已升级（旧版为「整表字节块」格式）；若用旧版 `storage.db` 启动，
+  会返回 `INTERNAL_ERROR`（提示 `legacy row layout, please rebuild the database`），需重建库。
 
 ## 5. Java 调用示例（Hint）
 

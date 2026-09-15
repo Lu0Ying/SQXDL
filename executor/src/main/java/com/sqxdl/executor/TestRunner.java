@@ -99,6 +99,9 @@ public class TestRunner {
                 new Case("WHERE 子句截断", "SELECT * FROM student WHERE;", Expected.error("SYNTAX_ERROR")),
                 new Case("括号不匹配", "CREATE TABLE broken_t (id INT;", Expected.error("SYNTAX_ERROR")),
                 new Case("缺少分号", "SELECT * FROM student", Expected.error("SYNTAX_ERROR")),
+                new Case("分号后跟行注释", "SELECT * FROM runner_t; -- 查询全部", Expected.success()),
+                new Case("注释里写分号不算", "SELECT * FROM runner_t -- 分号忘在注释里;", Expected.error("SYNTAX_ERROR")),
+                new Case("块注释夹在语句中", "SELECT * FROM /* 全表查询 */ runner_t;", Expected.success()),
                 // ===== 语义错误（SemanticAnalyzer → SEMANTIC_ERROR） =====
                 new Case("表不存在", "SELECT * FROM nosuch_table;", Expected.error("SEMANTIC_ERROR")),
                 new Case("列不存在", "SELECT nosuch_col FROM student;", Expected.error("SEMANTIC_ERROR")),

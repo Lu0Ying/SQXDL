@@ -26,6 +26,12 @@ public class PlanGenerator {
     private final CatalogImpl catalog;
     private SemanticAnalyzer analyzer;
 
+    /**
+     * 条件优化开关：generate() 默认开启（生成即优化，保持 B 组既有行为）；
+     * build() 会临时关闭以产出未经条件优化的原始计划树（供 DEBUG 对比）。
+     */
+    private boolean optimizeConditions = true;
+
     public PlanGenerator(CatalogImpl catalog) {
         this.catalog = catalog;
     }
@@ -39,6 +45,71 @@ public class PlanGenerator {
      */
     public void setAnalyzer(SemanticAnalyzer analyzer) {
         this.analyzer = analyzer;
+    }
+
+    /**
+     * 生成未经条件优化（常量折叠/逻辑化简）的原始计划树，供 DEBUG 展示"优化前"对比。
+     * 结构类优化（谓词下推、列裁剪、JOIN 顺序）仍会进行；条件保持 AST 原样。
+     *
+     * @param ast 语法树根节点
+     * @return 原始计划树根节点
+     */
+    public PlanNode build(ASTNode ast) {
+        optimizeConditions = false;
+        try {
+            return generate(ast);
+        } finally {
+            optimizeConditions = true;
+        }
+    }
+
+    /**
+     * 对计划树整体做条件优化：常量折叠、逻辑化简，恒真 Filter 节点整节点移除，
+     * Update/Delete 恒真条件退化为全表。结构类优化（下推/裁剪/JOIN 顺序）已由
+     * 生成阶段完成，此处仅处理条件表达式。
+     *
+     * @param plan 原始计划树根节点（如 {@link #build(ASTNode)} 的结果）
+     * @return 优化后的计划树根节点
+     */
+    public PlanNode optimize(PlanNode plan) {
+        if (plan instanceof PlanNode.FilterPlan p) {
+            ASTNode cond = optimizeCondition(p.getCondition());
+            PlanNode child = optimize(p.getChild());
+            // 恒真条件 → Filter 节点整个移除
+            return cond == null ? child : new PlanNode.FilterPlan(cond, child);
+        }
+        if (plan instanceof PlanNode.ProjectPlan p) {
+            return new PlanNode.ProjectPlan(p.getColumns(), optimize(p.getChild()));
+        }
+        if (plan instanceof PlanNode.GroupByPlan p) {
+            return new PlanNode.GroupByPlan(p.getGroupByColumns(), p.getAggregates(),
+                    optimize(p.getChild()));
+        }
+        if (plan instanceof PlanNode.OrderByPlan p) {
+            return new PlanNode.OrderByPlan(p.getOrderByItems(), optimize(p.getChild()));
+        }
+        if (plan instanceof PlanNode.JoinPlan p) {
+            List<PlanNode> children = new ArrayList<>();
+            for (PlanNode child : p.getChildren()) {
+                children.add(optimize(child));
+            }
+            List<ASTNode> onConds = new ArrayList<>();
+            for (ASTNode on : p.getOnConditions()) {
+                onConds.add(optimizeCondition(on));
+            }
+            return new PlanNode.JoinPlan(children, onConds, p.getAlgorithms());
+        }
+        if (plan instanceof PlanNode.UpdatePlan p) {
+            // 恒真条件 → null（全表更新）
+            return new PlanNode.UpdatePlan(p.getTableName(), p.getAssignments(),
+                    optimizeCondition(p.getCondition()));
+        }
+        if (plan instanceof PlanNode.DeletePlan p) {
+            // 恒真条件 → null（全表删除）
+            return new PlanNode.DeletePlan(p.getTableName(), optimizeCondition(p.getCondition()));
+        }
+        // SeqScan/Insert/CreateTable/Show/Describe/Drop：无子树、无条件，原样返回
+        return plan;
     }
 
     /**
@@ -56,11 +127,11 @@ public class PlanGenerator {
         }
         if (ast instanceof ASTNode.UpdateStmt stmt) {
             return new PlanNode.UpdatePlan(stmt.getTableName(), stmt.getAssignments(),
-                    optimizeCondition(stmt.getWhereCond()));
+                    maybeOptimizeCondition(stmt.getWhereCond()));
         }
         if (ast instanceof ASTNode.DeleteStmt stmt) {
             return new PlanNode.DeletePlan(stmt.getTableName(),
-                    optimizeCondition(stmt.getWhereCond()));
+                    maybeOptimizeCondition(stmt.getWhereCond()));
         }
         if (ast instanceof ASTNode.CreateTableStmt stmt) {
             // 列名清单 + 带类型的列定义（存储核心建表协议已升级为对象数组）
@@ -120,7 +191,7 @@ public class PlanGenerator {
         }
 
         // === 谓词下推：拆分 WHERE 为合取项 ===
-        List<ASTNode> conjuncts = splitConjuncts(optimizeCondition(stmt.getWhereCond()));
+        List<ASTNode> conjuncts = splitConjuncts(maybeOptimizeCondition(stmt.getWhereCond()));
         // 单表谓词按表分组（可下推）；跨表谓词留在 Join 之上
         Map<String, List<ASTNode>> perTableFilters = new HashMap<>();
         List<ASTNode> joinFilters = new ArrayList<>();
@@ -148,16 +219,28 @@ public class PlanGenerator {
             String mainTable = stmt.getTableName();
             plan = buildScanWithPushdown(mainTable, neededColumns, perTableFilters);
         } else {
-            // 多表 JOIN：每个子节点是带下推谓词的 SeqScan
-            List<PlanNode> children = new ArrayList<>();
-            List<ASTNode> onConditions = new ArrayList<>();
-            for (int i = 0; i < tableNames.size(); i++) {
-                String table = tableNames.get(i);
-                children.add(buildScanWithPushdown(table, neededColumns, perTableFilters));
-                // 主表 onCondition 约定为 null
-                onConditions.add(i == 0 ? null : optimizeCondition(joins.get(i - 1).getOnCond()));
+            // 多表 JOIN：RBO 顺序优化
+            // 构建原始 ON 条件列表：[null, join1.onCond, join2.onCond, ...]
+            List<ASTNode> originalOnConds = new ArrayList<>();
+            originalOnConds.add(null);  // 主表无 ON
+            for (ASTNode.SelectStmt.JoinClause join : joins) {
+                originalOnConds.add(maybeOptimizeCondition(join.getOnCond()));
             }
-            plan = new PlanNode.JoinPlan(children, onConditions);
+            // RBO 重排表顺序
+            JoinOrderResult joinOrder = computeJoinOrder(
+                    tableNames, originalOnConds, perTableFilters);
+            // 按重排顺序构建子节点
+            List<PlanNode> children = new ArrayList<>();
+            for (String table : joinOrder.tables) {
+                children.add(buildScanWithPushdown(table, neededColumns, perTableFilters));
+            }
+            // 为每个 JOIN 子节点选择连接算法
+            List<PlanNode.JoinAlgorithm> algorithms = new ArrayList<>();
+            algorithms.add(PlanNode.JoinAlgorithm.NESTED_LOOP);  // 左表
+            for (int i = 1; i < joinOrder.tables.size(); i++) {
+                algorithms.add(chooseJoinAlgorithm(joinOrder.onConditions.get(i)));
+            }
+            plan = new PlanNode.JoinPlan(children, joinOrder.onConditions, algorithms);
 
             // 跨表谓词留在 Join 之上
             if (!joinFilters.isEmpty()) {
@@ -168,7 +251,9 @@ public class PlanGenerator {
 
         // === 叠加 GROUP BY（可选）===
         if (!stmt.getGroupBy().isEmpty() || hasAggregate(stmt)) {
-            plan = new PlanNode.GroupByPlan(new ArrayList<>(stmt.getGroupBy()), plan);
+            List<String> aggList = collectAggregates(stmt);
+            plan = new PlanNode.GroupByPlan(new ArrayList<>(stmt.getGroupBy()),
+                    aggList, plan);
         }
 
         // === 叠加 ORDER BY（可选）===
@@ -246,6 +331,216 @@ public class PlanGenerator {
         return result;
     }
 
+    // ========== JOIN 算法选择 ==========
+
+    /**
+     * 根据 ON 条件形式选择连接算法。
+     * 等值连接（=）→ HASH；非等值或无条件 → NESTED_LOOP。
+     */
+    private PlanNode.JoinAlgorithm chooseJoinAlgorithm(ASTNode onCond) {
+        if (onCond == null) {
+            return PlanNode.JoinAlgorithm.NESTED_LOOP;  // 笛卡尔积
+        }
+        if (isEquiJoin(onCond)) {
+            return PlanNode.JoinAlgorithm.HASH;
+        }
+        return PlanNode.JoinAlgorithm.NESTED_LOOP;
+    }
+
+    /**
+     * 判断是否为等值连接：ON 条件为 a.col = b.col 形式。
+     * 支持合取分解：a=x AND b=y 全是等值 → 仍可 HashJoin。
+     * 含 OR 或非等值比较 → false。
+     */
+    private boolean isEquiJoin(ASTNode onCond) {
+        if (onCond instanceof ASTNode.BinaryExpr bin) {
+            if ("=".equals(bin.getOp())
+                    && bin.getLeft() instanceof ASTNode.IdentifierExpr
+                    && bin.getRight() instanceof ASTNode.IdentifierExpr) {
+                return true;
+            }
+            // AND 连接的多个等值条件也是 HashJoin
+            if ("AND".equals(bin.getOp())) {
+                return isEquiJoin(bin.getLeft()) && isEquiJoin(bin.getRight());
+            }
+        }
+        return false;
+    }
+
+    // ========== RBO JOIN 顺序优化 ==========
+
+    /**
+     * RBO 顺序优化结果：重排后的表顺序与对应的 ON 条件。
+     */
+    private static class JoinOrderResult {
+        final List<String> tables;
+        final List<ASTNode> onConditions;
+
+        JoinOrderResult(List<String> tables, List<ASTNode> onConditions) {
+            this.tables = tables;
+            this.onConditions = onConditions;
+        }
+    }
+
+    /**
+     * 基于 RBO（基于规则优化）的 JOIN 顺序优化。
+     * <p>
+     * 规则：
+     *   1. 有单表 WHERE 谓词的表优先作为起始表（过滤后中间结果更小）
+     *   2. 避免笛卡尔积：优先选择与已连接集合有 ON 条件的表
+     *   3. 同等条件下，保持原始顺序（主表优先）保证稳定性
+     * <p>
+     * 不依赖统计数据（行数、基数等），仅依赖 AST 结构和表结构信息。
+     *
+     * @param originalTables  原始表顺序 [主表, JOIN表1, JOIN表2, ...]
+     * @param originalOnConds 原始 ON 条件 [null, ON1, ON2, ...]（已优化）
+     * @param perTableFilters 每张表的单表 WHERE 谓词（用于优先级判断）
+     * @return 重排后的表顺序与 ON 条件
+     */
+    private JoinOrderResult computeJoinOrder(List<String> originalTables,
+                                              List<ASTNode> originalOnConds,
+                                              Map<String, List<ASTNode>> perTableFilters) {
+        int n = originalTables.size();
+        if (n <= 1) {
+            return new JoinOrderResult(new ArrayList<>(originalTables),
+                                        new ArrayList<>(originalOnConds));
+        }
+
+        // 收集所有非 null 的 ON 条件（用于构建连接图）
+        List<ASTNode> allConds = new ArrayList<>();
+        for (ASTNode cond : originalOnConds) {
+            if (cond != null) allConds.add(cond);
+        }
+
+        // 贪心选择
+        List<String> orderedTables = new ArrayList<>();
+        List<ASTNode> orderedOnConds = new ArrayList<>();
+        Set<String> joined = new HashSet<>();
+        Set<ASTNode> usedConds = new HashSet<>();
+
+        // 第一步：选择起始表
+        // 优先有单表谓词的表；无谓词时选主表（originalTables[0]）
+        String firstTable = originalTables.get(0);
+        int maxPreds = getPredicateCount(firstTable, perTableFilters);
+        for (int i = 1; i < n; i++) {
+            String t = originalTables.get(i);
+            int preds = getPredicateCount(t, perTableFilters);
+            if (preds > maxPreds) {
+                maxPreds = preds;
+                firstTable = t;
+            }
+        }
+
+        orderedTables.add(firstTable);
+        orderedOnConds.add(null);  // 左表无 ON 条件
+        joined.add(firstTable);
+
+        // 贪心添加剩余表
+        while (joined.size() < n) {
+            // 找所有可连接的候选表：与已连接集合有可用 ON 条件
+            List<String> connectedCandidates = new ArrayList<>();
+            Map<String, List<ASTNode>> candidateConds = new HashMap<>();
+
+            for (String t : originalTables) {
+                if (joined.contains(t)) continue;
+
+                List<ASTNode> applicableConds = findApplicableConditions(
+                        t, allConds, usedConds, joined, originalTables);
+
+                if (!applicableConds.isEmpty()) {
+                    connectedCandidates.add(t);
+                    candidateConds.put(t, applicableConds);
+                }
+            }
+
+            String nextTable;
+            ASTNode nextCond;
+
+            if (connectedCandidates.isEmpty()) {
+                // 无可连接表 → 笛卡尔积：选有最多谓词的剩余表
+                nextTable = pickRemainingWithMostPredicates(
+                        originalTables, joined, perTableFilters);
+                nextCond = null;
+            } else {
+                // 在可连接候选中，选有最多单表谓词的（同谓词数时保持原始顺序）
+                nextTable = pickBestCandidate(
+                        originalTables, connectedCandidates, perTableFilters);
+                List<ASTNode> conds = candidateConds.get(nextTable);
+                nextCond = combineWithAnd(conds);
+                usedConds.addAll(conds);
+            }
+
+            orderedTables.add(nextTable);
+            orderedOnConds.add(nextCond);
+            joined.add(nextTable);
+        }
+
+        return new JoinOrderResult(orderedTables, orderedOnConds);
+    }
+
+    /**
+     * 查找适用于候选表 t 的 ON 条件：
+     * 条件引用 t，且条件引用的所有其他表都已在 joined 中。
+     */
+    private List<ASTNode> findApplicableConditions(String t,
+                                                    List<ASTNode> allConds,
+                                                    Set<ASTNode> usedConds,
+                                                    Set<String> joined,
+                                                    List<String> allTables) {
+        List<ASTNode> applicable = new ArrayList<>();
+        for (ASTNode cond : allConds) {
+            if (usedConds.contains(cond)) continue;
+            Set<String> refs = extractTableRefs(cond, allTables);
+            if (!refs.contains(t)) continue;
+            Set<String> needed = new HashSet<>(refs);
+            needed.remove(t);
+            if (joined.containsAll(needed)) {
+                applicable.add(cond);
+            }
+        }
+        return applicable;
+    }
+
+    /** 获取表的单表 WHERE 谓词数量 */
+    private int getPredicateCount(String table, Map<String, List<ASTNode>> perTableFilters) {
+        List<ASTNode> filters = perTableFilters.get(table);
+        return filters == null ? 0 : filters.size();
+    }
+
+    /** 在剩余表中选有最多单表谓词的（同谓词数时保持原始顺序） */
+    private String pickRemainingWithMostPredicates(List<String> originalTables,
+                                                    Set<String> joined,
+                                                    Map<String, List<ASTNode>> perTableFilters) {
+        String best = null;
+        int bestPreds = -1;
+        for (String t : originalTables) {
+            if (joined.contains(t)) continue;
+            int preds = getPredicateCount(t, perTableFilters);
+            if (preds > bestPreds) {
+                bestPreds = preds;
+                best = t;
+            }
+        }
+        return best;
+    }
+
+    /** 在可连接候选中选有最多单表谓词的（同谓词数时保持原始顺序） */
+    private String pickBestCandidate(List<String> originalTables,
+                                       List<String> candidates,
+                                       Map<String, List<ASTNode>> perTableFilters) {
+        String best = null;
+        int bestPreds = -1;
+        for (String t : originalTables) {  // 按原始顺序遍历保证稳定性
+            if (!candidates.contains(t)) continue;
+            int preds = getPredicateCount(t, perTableFilters);
+            if (preds > bestPreds) {
+                bestPreds = preds;
+                best = t;
+            }
+        }
+        return best;
+    }
+
     /**
      * 构建带谓词下推的 SeqScan：如果有该表的单表谓词，在 SeqScan 之上叠加 Filter。
      */
@@ -299,13 +594,19 @@ public class PlanGenerator {
 
         // SELECT 清单中的列
         for (String col : selectList) {
-            if (isAggregate(col)) {
-                // COUNT(*) 需要所有表的列（执行器要数行数）
-                for (String t : tableNames) {
-                    List<String> cols = catalog.getColumns(t);
-                    if (cols != null) {
-                        result.get(t).addAll(cols);
+            AggregateFunction agg = AggregateFunction.parse(col);
+            if (agg != null) {
+                if (agg.isCountStar()) {
+                    // COUNT(*) 需要所有表的列（执行器要数行数）
+                    for (String t : tableNames) {
+                        List<String> cols = catalog.getColumns(t);
+                        if (cols != null) {
+                            result.get(t).addAll(cols);
+                        }
                     }
+                } else {
+                    // SUM/AVG/MIN/MAX/COUNT(col)：只需要参数列
+                    addColumnRef(agg.getArgument(), tableNames, result);
                 }
             } else {
                 addColumnRef(col, tableNames, result);
@@ -389,7 +690,7 @@ public class PlanGenerator {
         return allColumns == null ? new ArrayList<>() : allColumns;
     }
 
-    /** 投影清单是否含聚合项（如 COUNT(*)）；SELECT * 展开结果不含聚合 */
+    /** 投影清单是否含聚合项（如 COUNT(*)、SUM(age)）；SELECT * 展开结果不含聚合 */
     private boolean hasAggregate(ASTNode.SelectStmt stmt) {
         for (String column : stmt.getSelectList()) {
             if (isAggregate(column)) {
@@ -399,12 +700,34 @@ public class PlanGenerator {
         return false;
     }
 
-    /** 判断投影项是否为聚合函数调用（Parser 归一化为 "COUNT(*)" 形式） */
+    /** 判断投影项是否为聚合函数调用 */
     private boolean isAggregate(String column) {
-        return "COUNT(*)".equalsIgnoreCase(column);
+        return AggregateFunction.isAggregate(column);
+    }
+
+    /**
+     * 收集 SELECT 清单中出现的所有聚合函数（保持出现顺序）。
+     * 用于 GroupByPlan 的 aggregates 字段，执行器据此对每组计算聚合值。
+     */
+    private List<String> collectAggregates(ASTNode.SelectStmt stmt) {
+        List<String> result = new ArrayList<>();
+        for (String column : stmt.getSelectList()) {
+            if (isAggregate(column)) {
+                result.add(column);
+            }
+        }
+        return result;
     }
 
     // ========== 条件优化入口 ==========
+
+    /**
+     * 按开关决定是否优化条件：generate()（含 build 内部复用）据此区分
+     * "原始生成"与"生成即优化"两种模式。
+     */
+    private ASTNode maybeOptimizeCondition(ASTNode cond) {
+        return optimizeConditions ? optimizeCondition(cond) : cond;
+    }
 
     /**
      * 优化 WHERE 条件表达式。
@@ -760,7 +1083,7 @@ public class PlanGenerator {
             sb.append("\"op\":\"dropTable\",\"table\":");
             writeJsonString(sb, p.getTableName());
         } else if (plan instanceof PlanNode.JoinPlan p) {
-            // JOIN：{"op":"join","children":[子节点...],"on":[条件...]}
+            // JOIN：{"op":"join","children":[子节点...],"on":[条件...],"algorithms":[算法...]}
             // on[i] 为 null 表示该子节点为左表，无 ON 条件
             sb.append("\"op\":\"join\",\"children\":[");
             for (int i = 0; i < p.getChildren().size(); i++) {
@@ -778,9 +1101,22 @@ public class PlanGenerator {
                 }
             }
             sb.append("]");
+            if (p.getAlgorithms() != null) {
+                sb.append(",\"algorithms\":[");
+                for (int i = 0; i < p.getAlgorithms().size(); i++) {
+                    if (i > 0) sb.append(",");
+                    sb.append("\"").append(p.getAlgorithms().get(i).name()).append("\"");
+                }
+                sb.append("]");
+            }
         } else if (plan instanceof PlanNode.GroupByPlan p) {
             sb.append("\"op\":\"groupBy\",\"columns\":");
             writeStringList(sb, p.getGroupByColumns());
+            // 聚合函数列表（非空时输出，供执行器计算每组聚合值）
+            if (!p.getAggregates().isEmpty()) {
+                sb.append(",\"aggregates\":");
+                writeStringList(sb, p.getAggregates());
+            }
             sb.append(",\"child\":");
             writePlanNode(sb, p.getChild());
         } else if (plan instanceof PlanNode.OrderByPlan p) {
