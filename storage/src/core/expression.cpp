@@ -7,14 +7,66 @@ EvalContext::EvalContext(const std::vector<std::string> &column_names, const Row
 {
 }
 
+int find_column_index(const std::vector<std::string> &column_names, const std::string &column_name)
+{
+    // 第一轮：精确匹配（含 join 重名列的 "来源.列名" schema 名）
+    for (size_t i = 0; i < column_names.size(); ++i)
+    {
+        if (column_names[i] == column_name)
+        {
+            return static_cast<int>(i);
+        }
+    }
+
+    // 第二轮：点限定宽容匹配。join 输出列名只有两侧重名时才加 "来源." 前缀，
+    // 而 SQL 中 table.column 的表名与 schema 前缀不一定一致（如 teacher.tid
+    // 在 schema 中是裸名 tid，未与任何列重名）。按点后缀对应关系回退匹配。
+    auto ends_with = [](const std::string &s, const std::string &tail)
+    {
+        return s.size() > tail.size() && s.compare(s.size() - tail.size(), tail.size(), tail) == 0;
+    };
+    const size_t dot = column_name.find('.');
+    // 带点查询取点后缀（teacher.tid -> tid，允许命中裸名或任意前缀形式）；
+    // 裸名查询要求命中带前缀形式（精确名第一轮已试过），避免与精确命中重复
+    const std::string needle = dot != std::string::npos ? column_name.substr(dot + 1) : column_name;
+    if (needle.empty())
+    {
+        return -1;
+    }
+    const std::string prefixed = "." + needle;
+    int hit = -1;
+    int hits = 0;
+    for (size_t i = 0; i < column_names.size(); ++i)
+    {
+        const std::string &name = column_names[i];
+        const bool match = dot != std::string::npos
+                               ? (name == needle || ends_with(name, prefixed))
+                               : ends_with(name, prefixed);
+        if (match)
+        {
+            hit = static_cast<int>(i);
+            ++hits;
+        }
+    }
+    if (hits == 1)
+    {
+        return hit;
+    }
+    return hits > 1 ? -2 : -1;
+}
+
 const Value &EvalContext::resolve(const std::string &column_name) const
 {
-    for (size_t i = 0; i < column_names_.size(); ++i)
+    const int index = find_column_index(column_names_, column_name);
+    if (index >= 0)
     {
-        if (column_names_[i] == column_name)
-        {
-            return row_.at(i);
-        }
+        return row_.at(static_cast<size_t>(index));
+    }
+    if (index == -2)
+    {
+        throw StorageError("INVALID_PLAN",
+                           "Ambiguous column reference: " + column_name +
+                               " (matches multiple columns, qualify it explicitly)");
     }
     throw StorageError("COLUMN_NOT_FOUND", "Column " + column_name + " not found");
 }

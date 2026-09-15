@@ -695,10 +695,11 @@ class SemanticAnalyzerTest {
         analyzer.analyze(stmt);
 
         List<String> expanded = analyzer.getExpandedColumns(stmt);
-        // 应展开为 student(id,name,age,score) + course(cid,cname) 共 6 列
+        // 多表 JOIN 的 SELECT * 展开为 表名.列名 限定名（student + course 共 6 列），
+        // 避免重名列歧义，且与 C 组存储核心的 join 输出 schema 对齐
         assertEquals(6, expanded.size());
-        assertTrue(expanded.contains("id"));
-        assertTrue(expanded.contains("cname"));
+        assertTrue(expanded.contains("student.id"));
+        assertTrue(expanded.contains("course.cname"));
     }
 
     // ========== GROUP BY 语义检查 ==========

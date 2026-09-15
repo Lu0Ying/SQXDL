@@ -408,8 +408,9 @@ public class SqlEngine implements AutoCloseable {
 
         // 阶段二：语义分析（复用 B 组真实校验，含列类型校验）
         phase0 = System.nanoTime();
+        SemanticAnalyzer semantic = new SemanticAnalyzer(catalog);
         try {
-            new SemanticAnalyzer(catalog).analyze(ast);
+            semantic.analyze(ast);
             if (SqlDebug.ENABLED) {
                 SqlDebug.printSemantic();
             }
@@ -432,6 +433,9 @@ public class SqlEngine implements AutoCloseable {
         PlanNode plan;
         try {
             PlanGenerator generator = new PlanGenerator(catalog);
+            // 传入语义分析器：SELECT * 展开复用语义阶段的受限列清单（多表含限定名），
+            // 与语义校验看到的列保持一致
+            generator.setAnalyzer(semantic);
             if (SqlDebug.ENABLED) {
                 // DEBUG：分别展示优化前后的计划树，观察常量折叠与恒真过滤移除效果
                 PlanNode raw = generator.build(ast);

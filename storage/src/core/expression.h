@@ -16,13 +16,22 @@ class EvalContext
 public:
     EvalContext(const std::vector<std::string> &column_names, const Row &row);
 
-    // 列不存在抛 StorageError(COLUMN_NOT_FOUND)
+    // 列解析规则：
+    // 1) 精确匹配 schema 列名（join 重名列的 schema 名本身形如 "student.name"）；
+    // 2) 失败时按点后缀宽容匹配——带点查询（teacher.tid）匹配裸名 tid 或任意
+    //    "表.tid"；裸名查询（tid）匹配任意 "表.tid"。命中必须唯一，多个命中
+    //    抛 StorageError(INVALID_PLAN) 报歧义；仍无命中抛 StorageError(COLUMN_NOT_FOUND)
     const Value &resolve(const std::string &column_name) const;
 
 private:
     const std::vector<std::string> &column_names_;
     const Row &row_;
 };
+
+// 在列名表中定位列（供 EvalContext::resolve 与 project 投影共用）：
+// 先精确匹配，再按点后缀宽容匹配。返回命中下标；唯一宽容命中返回其下标，
+// 多个命中返回 -2（歧义），无命中返回 -1。
+int find_column_index(const std::vector<std::string> &column_names, const std::string &column_name);
 
 // 条件表达式基类：对应 readme 1.2 中 condition 树的节点
 class Expression

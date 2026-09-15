@@ -40,7 +40,6 @@ public class SwingDemo extends JFrame {
     private JLabel rowCountLabel;
     private JTextArea sqlArea;
     private JTextArea logArea;
-    private boolean connected = false;
 
     /** 输入历史（↑/↓ 翻阅）；historyIndex 为 -1 表示停留在最新草稿位置 */
     private final CommandHistory inputHistory = new CommandHistory();
@@ -55,7 +54,7 @@ public class SwingDemo extends JFrame {
             log("⚠ 未检测到存储核心（storage_core.exe），当前使用本地模拟数据（重启后不保留）");
         }
         refreshTableList();
-        log("点击「连接」开始使用 SQXDL Database Manager v1.0");
+        log("SQXDL Database Manager v1.0 已就绪（连接自动管理，可随时执行 SQL）");
     }
 
     /** 构建全部 UI 组件并布局。 */
@@ -78,7 +77,7 @@ public class SwingDemo extends JFrame {
         add(buildBottomArea(), BorderLayout.SOUTH);
     }
 
-    /** 顶部工具栏：连接 / 断开。 */
+    /** 顶部工具栏：刷新（重新同步左侧表列表）。 */
     private JToolBar buildToolbar() {
         JToolBar toolBar = new JToolBar();
         toolBar.setFloatable(false);
@@ -89,14 +88,10 @@ public class SwingDemo extends JFrame {
         toolBar.add(title);
         toolBar.add(Box.createHorizontalGlue());
 
-        JButton connectBtn = new JButton("连接");
-        JButton disconnectBtn = new JButton("断开");
-        toolBar.add(connectBtn);
-        toolBar.add(Box.createHorizontalStrut(8));
-        toolBar.add(disconnectBtn);
+        JButton refreshBtn = new JButton("刷新");
+        toolBar.add(refreshBtn);
 
-        connectBtn.addActionListener(e -> connect());
-        disconnectBtn.addActionListener(e -> disconnect());
+        refreshBtn.addActionListener(e -> refreshTables());
         return toolBar;
     }
 
@@ -322,27 +317,10 @@ public class SwingDemo extends JFrame {
         }
     }
 
-    /** 连接：标记连接状态并刷新左侧表列表。 */
-    private void connect() {
-        if (connected) {
-            log("⚠ 已处于连接状态");
-            return;
-        }
-        connected = true;
-        log("✅ 已连接到 SQXDL 数据库，版本 v1.0");
+    /** 刷新：重新从数据字典同步左侧表列表（连接由引擎自动管理，无需手动建立/断开）。 */
+    private void refreshTables() {
         refreshTableList();
-        log("📂 当前共 " + tableList.getModel().getSize() + " 张表");
-    }
-
-    /** 断开连接：结束存储服务会话（协议 exit 正常落盘）；下次执行自动重连。 */
-    private void disconnect() {
-        if (!connected) {
-            log("⚠ 当前未连接");
-            return;
-        }
-        connected = false;
-        engine.close();
-        log("🔌 已断开连接（存储服务已关闭，数据已落盘）");
+        log("🔄 已刷新表列表，当前共 " + tableList.getModel().getSize() + " 张表");
     }
 
     /** 左侧点击表：走 SELECT * FROM 表 的完整流水线加载该表数据。 */

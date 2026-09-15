@@ -710,7 +710,9 @@ public class PlanGenerator {
                 return resolved;
             }
         }
-        // 退化为自行展开
+        // 退化为自行展开：SELECT * 展开为主表 + JOIN 表的全部列；
+        // 多表场景使用 表名.列名 限定名，与语义分析阶段的展开规则一致，
+        // 避免重名列（如两表都有 name）在存储核心投影时产生歧义
         List<String> selectList = stmt.getSelectList();
         if (selectList.size() != 1 || !"*".equals(selectList.get(0))) {
             // 解析别名前缀
@@ -720,8 +722,23 @@ public class PlanGenerator {
             }
             return resolved;
         }
-        List<String> allColumns = catalog.getColumns(stmt.getTableName());
-        return allColumns == null ? new ArrayList<>() : allColumns;
+        List<String> tables = new ArrayList<>();
+        tables.add(stmt.getTableName());
+        for (ASTNode.SelectStmt.JoinClause join : stmt.getJoins()) {
+            tables.add(join.getTableName());
+        }
+        boolean multiTable = tables.size() > 1;
+        List<String> allColumns = new ArrayList<>();
+        for (String table : tables) {
+            List<String> cols = catalog.getColumns(table);
+            if (cols == null) {
+                continue;
+            }
+            for (String col : cols) {
+                allColumns.add(multiTable ? table + "." + col : col);
+            }
+        }
+        return allColumns;
     }
 
     /** 投影清单是否含聚合项（如 COUNT(*)、SUM(age)）；SELECT * 展开结果不含聚合 */
