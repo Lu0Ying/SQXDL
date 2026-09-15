@@ -86,11 +86,21 @@ public class SemanticAnalyzer {
 
         List<String> selectList = stmt.getSelectList();
 
-        // SELECT * 展开：多表查询时展开为所有表的全部列（按表顺序拼接）
+        // SELECT * 展开：单表用裸名列；多表（JOIN）用 表名.列名 限定名——
+        // 存储核心 join 输出的 schema 只对两侧重名列加来源前缀，重名列
+        // （如 student.name / teacher.name）若按裸名投影会产生歧义，
+        // 统一限定后无论是否重名都能唯一定位
         if (selectList.size() == 1 && "*".equals(selectList.get(0))) {
             List<String> allColumns = new ArrayList<>();
+            boolean multiTable = tableNames.size() > 1;
             for (String t : tableNames) {
-                allColumns.addAll(catalog.getColumns(t));
+                List<String> cols = catalog.getColumns(t);
+                if (cols == null) {
+                    continue;
+                }
+                for (String c : cols) {
+                    allColumns.add(multiTable ? t + "." + c : c);
+                }
             }
             expandedSelectLists.put(stmt, allColumns);
         } else {

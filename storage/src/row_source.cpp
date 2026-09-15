@@ -3,6 +3,7 @@
 #include <utility>
 
 #include "core/database.h"
+#include "core/expression.h"
 #include "core/storage_error.h"
 #include "core/table.h"
 #include "query_op.h"
@@ -240,20 +241,20 @@ std::unique_ptr<RowSource> build_row_source(const nlohmann::json &plan)
         for (const auto &column : columns)
         {
             const std::string name = column.get<std::string>();
-            size_t index = child_columns.size();
-            for (size_t i = 0; i < child_columns.size(); ++i)
+            // 与条件求值共用列解析规则（含点限定宽容匹配），
+            // 支持 JOIN 结果 schema 的 "来源.列名" 前缀差异
+            const int index = find_column_index(child_columns, name);
+            if (index == -2)
             {
-                if (child_columns[i] == name)
-                {
-                    index = i;
-                    break;
-                }
+                throw StorageError("INVALID_PLAN",
+                                   "Ambiguous project column: " + name +
+                                       " (matches multiple columns, qualify it explicitly)");
             }
-            if (index == child_columns.size())
+            if (index < 0)
             {
                 throw StorageError("COLUMN_NOT_FOUND", "Column " + name + " not found");
             }
-            indices.push_back(index);
+            indices.push_back(static_cast<size_t>(index));
             names.push_back(name);
         }
         return std::make_unique<ProjectRowSource>(std::move(child), std::move(indices), std::move(names));
