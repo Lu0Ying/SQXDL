@@ -8,6 +8,8 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -81,6 +83,129 @@ public class StorageClient {
         String json = PhysicalPlanJson.serialize(plan);
         lastSerializeNanos = System.nanoTime() - t0;
         return call(json);
+    }
+
+    /**
+     * 批量执行计划（流水线协议）：全部计划序列化后一次性交给
+     * {@link #callAll}，由后者一次写入、按序读回。
+     *
+     * @return 与输入等长的结果列表
+     */
+    public List<StorageResult> executeAll(List<PlanNode> plans) {
+        long t0 = System.nanoTime();
+        List<String> jsons = new ArrayList<>(plans.size());
+        for (PlanNode plan : plans) {
+            jsons.add(PhysicalPlanJson.serialize(plan));
+        }
+        lastSerializeNanos = System.nanoTime() - t0;
+        return callAll(jsons);
+    }
+
+    /**
+     * 批量调用（流水线协议）：一次写入全部计划 JSON 行，按序读回等量结果行。
+     * 存储核心本就是"读一行-执行-立即回一行"的流式循环，无需改动；
+     * 写入放在独立线程：Windows 管道缓冲约 64KB，大批量写入会被背压阻塞，
+     * 若在主线程"写完再读"，核心回写大结果同样被阻塞会造成死锁，
+     * 写读并行后由管道自然节流。任一行失败（超时/进程退出/响应非法）即
+     * 关闭会话并让剩余条目统一标记同一错误，保证返回列表与输入等长对齐。
+     *
+     * @return 与 planJsons 等长的结果列表
+     */
+    public List<StorageResult> callAll(List<String> planJsons) {
+        if (planJsons.isEmpty()) {
+            return List.of();
+        }
+        if (!Files.isExecutable(exePath)) {
+            return failedAll(planJsons.size(), StorageResult.error("STORAGE_UNAVAILABLE",
+                    "找不到存储核心程序: " + exePath.toAbsolutePath()
+                            + "（可用 -Dsqxdl.storage.exe=<路径> 指定）"));
+        }
+        try {
+            Process current = ensureSession();
+            long send0 = System.nanoTime();
+            IOException[] writeError = new IOException[1];
+            Thread writer = new Thread(() -> {
+                try {
+                    var out = current.getOutputStream();
+                    for (String json : planJsons) {
+                        out.write((json + "\n").getBytes(StandardCharsets.UTF_8));
+                    }
+                    out.flush();
+                } catch (IOException e) {
+                    writeError[0] = e;
+                }
+            }, "storage-core-writer");
+            writer.start();
+
+            List<StorageResult> results = new ArrayList<>(planJsons.size());
+            long wait0 = System.nanoTime();
+            for (int i = 0; i < planJsons.size(); i++) {
+                String line;
+                try {
+                    Future<String> pendingLine = readerPool.submit(() -> stdout.readLine());
+                    line = pendingLine.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                } catch (TimeoutException e) {
+                    closeSession();
+                    return failedRemainder(results, planJsons.size(),
+                            StorageResult.error("STORAGE_TIMEOUT",
+                                    "存储核心执行超时（批量第 " + (i + 1) + " 条处）"));
+                } catch (ExecutionException e) {
+                    closeSession();
+                    return failedRemainder(results, planJsons.size(),
+                            StorageResult.error("STORAGE_UNAVAILABLE",
+                                    "读取存储核心输出失败: " + e.getCause().getMessage()));
+                }
+                if (line == null) {
+                    closeSession();
+                    return failedRemainder(results, planJsons.size(),
+                            StorageResult.error("STORAGE_UNAVAILABLE",
+                                    "存储核心进程已退出（批量第 " + (i + 1) + " 条处）"));
+                }
+                try {
+                    results.add(StorageResult.parse(line.trim()));
+                } catch (RuntimeException e) {
+                    closeSession();
+                    return failedRemainder(results, planJsons.size(),
+                            StorageResult.error("INVALID_RESPONSE",
+                                    "存储核心返回了无法解析的结果: " + line.trim()));
+                }
+            }
+            try {
+                writer.join(5000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            lastSendNanos = System.nanoTime() - send0;
+            lastWaitNanos = System.nanoTime() - wait0;
+            lastParseNanos = 0; // 响应解析已在 wait 段内逐行完成
+            return results;
+        } catch (IOException e) {
+            closeSession();
+            return failedAll(planJsons.size(),
+                    StorageResult.error("STORAGE_UNAVAILABLE", "无法启动存储核心: " + e.getMessage()));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return failedAll(planJsons.size(),
+                    StorageResult.error("STORAGE_UNAVAILABLE", "等待存储核心时被中断"));
+        }
+    }
+
+    /** 用指定错误补齐到 total 长度（results 为已完成前缀） */
+    private static List<StorageResult> failedRemainder(List<StorageResult> results, int total, StorageResult error) {
+        List<StorageResult> all = new ArrayList<>(results);
+        while (all.size() < total) {
+            all.add(error);
+        }
+        return all;
+    }
+
+    /** 全部条目填充同一错误 */
+    private static List<StorageResult> failedAll(int total, StorageResult error) {
+        List<StorageResult> all = new ArrayList<>(total);
+        for (int i = 0; i < total; i++) {
+            all.add(error);
+        }
+        return all;
     }
 
     /** 直接以计划 JSON 调用存储核心（联调时可手工构造计划） */

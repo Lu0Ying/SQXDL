@@ -198,13 +198,151 @@ public class SqlEngine implements AutoCloseable {
     public StorageResult execute(String sql) {
         PhaseTiming timing = new PhaseTiming();
         long total0 = System.nanoTime();
+        timing.start = total0;
+        Prepared prepared = prepare(sql, timing);
+        if (prepared.error != null) {
+            return finishTiming(timing, total0, prepared.error);
+        }
+        // LOCAL 模式直接本地模拟（数据保存在 JVM，演示可跨语句看到变化）
+        if (mode == Mode.LOCAL) {
+            long phase0 = System.nanoTime();
+            StorageResult localResult = simulate(prepared.ast);
+            timing.storage = System.nanoTime() - phase0;
+            return finishTiming(timing, total0, localResult);
+        }
+        // AUTO 模式走真实存储核心，不可用时回退模拟
+        StorageResult result;
+        long phase0 = System.nanoTime();
+        timing.storageUsed = true; // 本次确实调用了存储核心，耗时分解可展示存储侧细分
+        try {
+            result = executePlan(prepared.plan);
+        } catch (RuntimeException e) {
+            timing.storage = System.nanoTime() - phase0;
+            return finishTiming(timing, total0, StorageResult.error("PLAN_ERROR", e.getMessage()));
+        }
+        timing.storage = System.nanoTime() - phase0;
+        if (!isStorageFailure(result)) {
+            return finishTiming(timing, total0, result);
+        }
+        fallbackReason = "存储核心不可用，已使用内置示例数据模拟执行";
+        phase0 = System.nanoTime();
+        StorageResult simulated = simulate(prepared.ast);
+        timing.storage += System.nanoTime() - phase0;
+        return finishTiming(timing, total0, simulated);
+    }
+
+    /**
+     * 批量执行多条 SQL（流水线协议）：Java 侧逐条完成准备（前一条的建表
+     * 登记对后续语句的语义检查可见），可执行计划按连续段批量写入存储核心、
+     * 按序读回结果，返回列表与输入一一对应。任一条在 Java 侧失败即记录
+     * ERROR 并继续后续条目（与脚本模式"报错继续"一致）；存储段失败时该段
+     * 全部条目标记同一错误。LOCAL/回退模式退化为逐条 execute。
+     */
+    public List<StorageResult> executeBatch(List<String> sqls) {
+        if (sqls.isEmpty()) {
+            return List.of();
+        }
+        if (mode == Mode.LOCAL) {
+            List<StorageResult> results = new ArrayList<>(sqls.size());
+            for (String sql : sqls) {
+                results.add(execute(sql));
+            }
+            return results;
+        }
+        long batch0 = System.nanoTime();
+        List<StorageResult> results = new ArrayList<>(sqls.size());
+        List<PlanNode> plans = new ArrayList<>(sqls.size());
+        List<ASTNode> asts = new ArrayList<>(sqls.size());
+        boolean[] batchable = new boolean[sqls.size()];
+        long prepareSum = 0;
+        for (int i = 0; i < sqls.size(); i++) {
+            PhaseTiming timing = new PhaseTiming();
+            timing.start = System.nanoTime();
+            Prepared prepared = prepare(sqls.get(i), timing);
+            prepareSum += timing.normalize + timing.parse + timing.semantic + timing.plan;
+            results.add(prepared.error);
+            plans.add(prepared.plan);
+            asts.add(prepared.ast);
+            // 含 Java 端算子（OrderBy/GroupBy）的计划无法直接序列化下发，走单条路径
+            batchable[i] = prepared.error == null && !needsLocalExecution(prepared.plan);
+        }
+        // 连续可批量段流水线发送：Java 侧失败条目与本地执行条目夹在中间时分段，
+        // 保证批量协议的输入输出 1:1 对齐
+        int i = 0;
+        while (i < sqls.size()) {
+            if (!batchable[i]) {
+                // plan 非 null 说明只是含 Java 端算子：走完整单条路径（含回退模拟）
+                if (plans.get(i) != null) {
+                    results.set(i, execute(sqls.get(i)));
+                }
+                i++; // plan 为 null 的条目已在结果列表中记 ERROR
+                continue;
+            }
+            int end = i;
+            while (end < sqls.size() && batchable[end]) {
+                end++;
+            }
+            List<StorageResult> part = storageClient.executeAll(plans.subList(i, end));
+            for (int k = i; k < end; k++) {
+                StorageResult r = part.get(k - i);
+                if (isStorageFailure(r)) {
+                    // 批量段存储不可用：与单条路径一致地回退内置模拟层
+                    fallbackReason = "存储核心不可用，已使用内置示例数据模拟执行";
+                    results.set(k, simulate(asts.get(k)));
+                } else {
+                    results.set(k, r);
+                }
+            }
+            i = end;
+        }
+        lastBatchNanos = new long[]{prepareSum, storageClient.lastSerializeNanos(),
+                storageClient.lastSendNanos(), storageClient.lastWaitNanos(),
+                System.nanoTime() - batch0};
+        return results;
+    }
+
+    /**
+     * 判断计划是否包含需在 Java 端执行的算子（OrderBy/GroupBy 聚合与排序）。
+     * 这类节点没有对应的物理 JSON 表示，批量协议无法直接下发，需走单条
+     * {@link #execute} 路径（由 executePlan 先递归执行 child 再本地处理）。
+     */
+    private static boolean needsLocalExecution(PlanNode plan) {
+        if (plan instanceof PlanNode.OrderByPlan || plan instanceof PlanNode.GroupByPlan) {
+            return true;
+        }
+        if (plan instanceof PlanNode.ProjectPlan project) {
+            return needsLocalExecution(project.getChild());
+        }
+        if (plan instanceof PlanNode.FilterPlan filter) {
+            return needsLocalExecution(filter.getChild());
+        }
+        return false;
+    }
+
+    /** 最近一次 executeBatch 的批量级耗时（纳秒）：Java 侧准备累计/序列化/发送/接收/合计 */
+    private volatile long[] lastBatchNanos = new long[5];
+
+    /**
+     * 最近一次 {@link #executeBatch} 的批量级耗时采样，供基准测试展示。
+     * 返回 5 元素数组：[Java 侧准备累计, 计划序列化, 发送(写线程), 接收全部结果, 合计]，单位纳秒。
+     */
+    public long[] lastBatchNanos() {
+        return lastBatchNanos.clone();
+    }
+
+    /**
+     * Java 侧流水线：规范化 → 词法语法解析 → 语义分析 → 建表登记 → 计划生成。
+     * 全程不触碰存储核心；失败时以 {@code error} 结果返回（plan 为 null），
+     * 成功时保留 AST 供 LOCAL 模拟层使用。
+     */
+    private Prepared prepare(String sql, PhaseTiming timing) {
         fallbackReason = null;
         // 每条语句先清空上一条的拼写提示，防止语法失败提前返回时旧提示跨语句残留
         spellWarnings = List.of();
         // 规范化：去首尾空白；分号必填（判定与去分号前先剥离注释，注释里出现分号不算数）
         String trimmed = sql.trim();
         if (trimmed.isEmpty()) {
-            return finishTiming(timing, total0, StorageResult.error("EMPTY_SQL", "SQL 语句为空"));
+            return new Prepared(null, null, StorageResult.error("EMPTY_SQL", "SQL 语句为空"));
         }
         String stripped = stripComments(trimmed);
         String normalized;
@@ -215,15 +353,15 @@ public class SqlEngine implements AutoCloseable {
             // 剥离后需 trim：行注释前的空格会成为剥离文本的结尾（"...; -- 注释" → "...; "）
             stripped = stripped.trim();
             if (!stripped.endsWith(";")) {
-                return finishTiming(timing, total0,
+                return new Prepared(null, null,
                         StorageResult.error("SYNTAX_ERROR", "语句必须以分号 ; 结尾"));
             }
             normalized = stripped.substring(0, stripped.length() - 1).trim();
             if (normalized.isEmpty()) {
-                return finishTiming(timing, total0, StorageResult.error("EMPTY_SQL", "SQL 语句为空"));
+                return new Prepared(null, null, StorageResult.error("EMPTY_SQL", "SQL 语句为空"));
             }
         }
-        timing.normalize = System.nanoTime() - total0;
+        timing.normalize = System.nanoTime() - timing.start;
 
         // 阶段一：词法 + 语法解析（复用 A 组真实代码，含拼写自动纠错）
         ASTNode ast;
@@ -237,7 +375,7 @@ public class SqlEngine implements AutoCloseable {
         } catch (SqxdlException e) {
             // 语法错误前 Lexer 可能已产出本条的拼写纠正提示（如 SELEC * student），一并带出
             spellWarnings = lexer.getSpellWarnings();
-            return finishTiming(timing, total0, StorageResult.error("SYNTAX_ERROR", e.getMessage()));
+            return new Prepared(null, null, StorageResult.error("SYNTAX_ERROR", e.getMessage()));
         }
         timing.parse = System.nanoTime() - phase0;
         spellWarnings = lexer.getSpellWarnings();
@@ -254,7 +392,7 @@ public class SqlEngine implements AutoCloseable {
             }
         } catch (RuntimeException e) {
             timing.semantic = System.nanoTime() - phase0;
-            return finishTiming(timing, total0, StorageResult.error("SEMANTIC_ERROR", e.getMessage()));
+            return new Prepared(null, null, StorageResult.error("SEMANTIC_ERROR", e.getMessage()));
         }
         timing.semantic = System.nanoTime() - phase0;
 
@@ -266,7 +404,7 @@ public class SqlEngine implements AutoCloseable {
             tables.put(createStmt.getTableName(), new TableData(infos, new ArrayList<>()));
         }
 
-        // 阶段三：计划生成 + 执行（generate = build + optimize，任何异常都以 ERROR 返回）
+        // 阶段三：计划生成（generate = build + optimize，任何异常都以 ERROR 返回）
         phase0 = System.nanoTime();
         PlanNode plan;
         try {
@@ -282,36 +420,14 @@ public class SqlEngine implements AutoCloseable {
             }
         } catch (RuntimeException e) {
             timing.plan = System.nanoTime() - phase0;
-            return finishTiming(timing, total0, StorageResult.error("PLAN_ERROR", e.getMessage()));
+            return new Prepared(null, null, StorageResult.error("PLAN_ERROR", e.getMessage()));
         }
         timing.plan = System.nanoTime() - phase0;
+        return new Prepared(ast, plan, null);
+    }
 
-        // LOCAL 模式直接本地模拟（数据保存在 JVM，演示可跨语句看到变化）
-        if (mode == Mode.LOCAL) {
-            phase0 = System.nanoTime();
-            StorageResult localResult = simulate(ast);
-            timing.storage = System.nanoTime() - phase0;
-            return finishTiming(timing, total0, localResult);
-        }
-        // AUTO 模式走真实存储核心，不可用时回退模拟
-        StorageResult result;
-        phase0 = System.nanoTime();
-        timing.storageUsed = true; // 本次确实调用了存储核心，耗时分解可展示存储侧细分
-        try {
-            result = executePlan(plan);
-        } catch (RuntimeException e) {
-            timing.storage = System.nanoTime() - phase0;
-            return finishTiming(timing, total0, StorageResult.error("PLAN_ERROR", e.getMessage()));
-        }
-        timing.storage = System.nanoTime() - phase0;
-        if (!isStorageFailure(result)) {
-            return finishTiming(timing, total0, result);
-        }
-        fallbackReason = "存储核心不可用，已使用内置示例数据模拟执行";
-        phase0 = System.nanoTime();
-        StorageResult simulated = simulate(ast);
-        timing.storage += System.nanoTime() - phase0;
-        return finishTiming(timing, total0, simulated);
+    /** prepare 的产物：ast 供 LOCAL 模拟层使用，error 非 null 表示 Java 侧已失败 */
+    private record Prepared(ASTNode ast, PlanNode plan, StorageResult error) {
     }
 
     /**
@@ -349,6 +465,7 @@ public class SqlEngine implements AutoCloseable {
 
     /** 单条语句的分段耗时采样（纳秒）；各段仅在 SqlDebug.ENABLED 时对外展示 */
     private static final class PhaseTiming {
+        long start;
         long normalize;
         long parse;
         long semantic;

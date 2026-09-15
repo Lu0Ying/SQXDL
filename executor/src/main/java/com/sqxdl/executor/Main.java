@@ -13,7 +13,9 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Scanner;
 
 /**
@@ -76,11 +78,10 @@ public class Main {
     }
 
     /**
-     * 脚本文件路径：逐行读取 .sql 文件并复用 {@link #processInput} 执行。
-     * 空行与整行注释（-- 开头）静默跳过；其余行为（exit 提前结束、
-     * debug/history/!N 元命令）与交互模式完全一致。
-     *
-     * @return false 表示读取失败或脚本中出现 exit 之外的致命错误
+     * 脚本文件路径：逐行读取 .sql 文件执行。连续的 SQL 语句通过
+     * {@link SqlEngine#executeBatch} 批量执行（流水线协议，减少逐条往返）；
+     * 元命令（exit/debug/history/!N）打断批量段、单条处理。空行与整行
+     * 注释（-- 开头）静默跳过；exit 提前结束；读取失败返回 false。
      */
     private static boolean runScriptFile(SqlEngine engine, String path) {
         Executor renderer = new Executor();
@@ -92,18 +93,43 @@ public class Main {
             System.out.println("⚠无法读取 SQL 文件: " + path + " (" + e.getMessage() + ")");
             return false;
         }
+        List<String> pending = new ArrayList<>(); // 待批量执行的连续 SQL 段
         for (String line : lines) {
-            String sql = line.trim();
-            if (sql.isEmpty() || sql.startsWith("--")) {
+            String text = line.trim();
+            if (text.isEmpty() || text.startsWith("--")) {
                 continue; // 空行/注释行不进入历史，也不触发语义报错
             }
-            // 回显实际执行的语句，保证脚本执行过程可追溯（与 !N 回显风格一致）
-            System.out.println("sqxdl> " + sql);
-            if (!processInput(engine, renderer, history, sql)) {
-                break; // 脚本中出现 exit：提前结束
+            if (isMetaCommand(text)) {
+                flushBatch(engine, renderer, pending);
+                if (!processInput(engine, renderer, history, text)) {
+                    return true; // exit：提前结束
+                }
+            } else {
+                pending.add(text);
             }
         }
+        flushBatch(engine, renderer, pending);
         return true;
+    }
+
+    /** 批量执行待处理语句并逐条回显+渲染结果，保证执行过程可追溯 */
+    private static void flushBatch(SqlEngine engine, Executor renderer, List<String> pending) {
+        if (pending.isEmpty()) {
+            return;
+        }
+        List<StorageResult> results = engine.executeBatch(pending);
+        for (int i = 0; i < pending.size(); i++) {
+            System.out.println("sqxdl> " + pending.get(i));
+            renderer.render(results.get(i));
+        }
+        pending.clear();
+    }
+
+    /** 与 processInput 的元命令保持一致：exit/debug/.debug/history/!N 重放 */
+    private static boolean isMetaCommand(String text) {
+        String lower = text.toLowerCase(Locale.ROOT);
+        return lower.equals(EXIT_COMMAND) || lower.equals("debug") || lower.equals(".debug")
+                || lower.equals("history") || text.startsWith("!");
     }
 
     /** 按 TTY 可用性选择输入路径。 */

@@ -2,6 +2,8 @@ package com.sqxdl.executor;
 
 import com.sqxdl.executor.storage.StorageResult;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -86,23 +88,31 @@ public class PerfTest {
         requireOk(create, "建表");
     }
 
-    /** 大输入：批量 INSERT 1000 行，统计总耗时、每行吞吐与逐行 8 段耗时平均。 */
+    /** 大输入：批量 INSERT 1000 行，走 executeBatch 流水线协议一次发送，统计总耗时/吞吐与批量级分解。 */
     private static void benchInsert(SqlEngine engine) {
         System.out.println("== 大输入 ==");
-        long t0 = System.nanoTime();
-        long[] sum = new long[8];
-        long[] count = new long[8];
+        List<String> inserts = new ArrayList<>(ROWS);
         for (int i = 1; i <= ROWS; i++) {
-            StorageResult r = engine.execute(insertOf(i));
-            accumulate(sum, count, engine.lastTimingNanos());
-            if (!r.getType().name().equals("ROWCOUNT")) {
-                System.out.println("⚠第 " + i + " 行插入失败: " + r.getErrorMessage());
-                return;
+            inserts.add(insertOf(i));
+        }
+        long t0 = System.nanoTime();
+        List<StorageResult> results = engine.executeBatch(inserts);
+        long ms = elapsedMs(t0);
+        int failed = 0;
+        for (StorageResult r : results) {
+            if (r.getType() == StorageResult.Type.ERROR) {
+                failed++;
             }
         }
-        long ms = elapsedMs(t0);
-        report(new BenchRow("批量 INSERT", ROWS + " 行", ms, ROWS * 1000.0 / Math.max(ms, 1),
-                averageOf(sum, count)));
+        System.out.printf(Locale.ROOT, "%-28s %10s %10d ms %12.0f%n",
+                "批量 INSERT(流水线)", ROWS + " 行", ms, ROWS * 1000.0 / Math.max(ms, 1));
+        if (failed > 0) {
+            System.out.println("⚠有 " + failed + " 行插入失败，示例: " + results.get(0).getErrorMessage());
+        }
+        long[] batch = engine.lastBatchNanos();
+        System.out.printf(Locale.ROOT,
+                "  └ 分解: Java侧准备累计 %.2f | 序列化 %.2f | 发送(写线程) %.2f | 接收 %d 条结果 %.2f ms%n",
+                batch[0] / 1e6, batch[1] / 1e6, batch[2] / 1e6, results.size(), batch[3] / 1e6);
         // 热身后续查找基准的页缓存（不含首次 IO）
         engine.execute("SELECT COUNT(*) FROM " + TABLE + ";");
     }
