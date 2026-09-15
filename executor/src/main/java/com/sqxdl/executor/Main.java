@@ -95,6 +95,11 @@ public class Main {
         List<String> lines;
         try {
             lines = Files.readAllLines(Path.of(path), StandardCharsets.UTF_8);
+            // 剥离 UTF-8 BOM：记事本等编辑器保存的文件可能带 BOM，
+            // 不剥离的话第一条语句会被 Lexer 报"非法字符"
+            if (!lines.isEmpty()) {
+                lines.set(0, lines.get(0).replace("\uFEFF", ""));
+            }
         } catch (IOException e) {
             System.out.println("⚠无法读取 SQL 文件: " + path + " (" + e.getMessage() + ")");
             return false;
