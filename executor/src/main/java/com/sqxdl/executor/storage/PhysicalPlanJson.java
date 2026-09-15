@@ -5,9 +5,17 @@ import com.sqxdl.semantic.CatalogImpl;
 import com.sqxdl.semantic.PlanNode;
 
 /**
- * 物理计划 JSON 序列化器：把 Java 计划树转换为存储核心（storage_core.exe）
- * 约定的 physic plan JSON，格式见 storage/readme.md。
- * 查询计划按 project -> filter -> scan 树形嵌套；写操作为单个对象。
+ * 物理计划 JSON 序列化器（D 组 storage 子包）：把 B 组的 Java 计划树转换为
+ * C 组存储核心（storage_core.exe）约定的 physic plan JSON，格式见 storage/readme.md。
+ * <p>支持的节点（可下发给核心原生执行）：
+ * project / filter / scan（对应 {@link PlanNode.SeqScanPlan}）/ join（多表折叠为
+ * 左深二叉链）/ insert / update / delete / createTable / showTables /
+ * describeTable / deleteTable（对应 {@link PlanNode.DropTablePlan}，协议操作名不同）。
+ * <p>边界：{@link PlanNode.OrderByPlan} 与 {@link PlanNode.GroupByPlan} 在核心协议中
+ * 没有对应算子，序列化会抛异常——含这两类节点的语句由
+ * {@link com.sqxdl.executor.SqlEngine#executePlan} 先递归执行子计划、再在 Java 端
+ * 后处理（排序/分组/计数），不会走到这里。
+ * <p>查询计划按 project -> filter -> scan 树形嵌套；写操作为单个对象。
  */
 public final class PhysicalPlanJson {
 

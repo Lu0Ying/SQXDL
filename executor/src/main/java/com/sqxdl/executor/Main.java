@@ -10,17 +10,30 @@ import org.jline.terminal.TerminalBuilder;
 
 import java.io.Console;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.Scanner;
 
 /**
- * 程序入口（D 组）。
- * 职责：启动 SQXDL 的交互式 REPL，读取用户 SQL 并交给 {@link SqlEngine}
- *       驱动 词法 -> 语法 -> 语义 -> 计划生成 -> 执行 的完整流水线。
- * 输入分两种路径（共用同一条 {@link #processInput} 处理逻辑）：
- *       真终端 —— JLine LineReader，支持 ↑↓ 翻历史、Ctrl+R 搜索、行内编辑；
- *       管道/重定向（无 TTY）—— Scanner 循环，history / !N / !! 元命令等效替代。
- * 执行模式为 AUTO：优先真实存储核心（storage_core.exe），
- * 存储核心不可用时自动回退内置示例数据，保证 Demo 完整可演示。
+ * 程序入口 —— D 组（executor 模块）的命令行前端。
+ * <p>职责：启动 SQXDL 交互式 REPL，读取用户 SQL 交给 {@link SqlEngine} 驱动
+ * 词法 -> 语法 -> 语义 -> 计划生成 -> 执行 的完整流水线（各阶段由 A/B 组模块
+ * 与存储核心完成，见 SqlEngine 类注释）；本类只负责输入输出与元命令，
+ * 不含任何解析/执行逻辑。
+ * <p>三种输入路径（SQL 部分共用同一条 {@link #processInput} 处理逻辑）：
+ * <ul>
+ *   <li>真终端 —— JLine LineReader，支持 ↑↓ 翻历史、Ctrl+R 搜索、行内编辑</li>
+ *   <li>管道/重定向（无 TTY）—— Scanner 循环，history / !! / !N 元命令等效替代</li>
+ *   <li>脚本文件 —— {@code -f <path>} / {@code --file <path>} 指定 .sql 文件，
+ *       连续语句批量执行（指导书要求：输入支持 SQL 文件或标准输入）</li>
+ * </ul>
+ * 元命令：exit 退出、debug 开关流水线调试输出、history 列历史、!N 重放。
+ * 执行模式为 AUTO：优先真实存储核心（storage_core.exe，数据落盘持久化），
+ * 不可用时自动回退内置示例数据，保证 Demo 完整可演示。
  */
 public class Main {
 
@@ -30,15 +43,104 @@ public class Main {
     public static void main(String[] args) {
         try {
             SqlEngine engine = new SqlEngine(SqlEngine.Mode.AUTO);
+            boolean success = true;
             try {
-                runRepl(engine);
+                String scriptFile = parseScriptFile(args);
+                if (scriptFile != null) {
+                    success = runScriptFile(engine, scriptFile);
+                } else {
+                    runRepl(engine);
+                }
             } finally {
                 // 任何退出路径都结束存储会话：核心在协议 exit 时才把行数据刷入磁盘
                 engine.close();
             }
+            // 脚本执行失败以非零码退出，便于批处理/CI 判断结果
+            if (!success) {
+                System.exit(1);
+            }
         } catch (Exception e) {
             System.err.println("⚠发生未预期的错误: " + e.getMessage());
+            System.exit(1);
         }
+    }
+
+    /**
+     * 解析脚本文件参数：{@code -f <path>} / {@code --file <path>} 或首个位置参数。
+     *
+     * @return 文件路径；未指定时返回 null（走交互模式）
+     * @throws IllegalArgumentException -f/--file 后缺失路径时抛出
+     */
+    private static String parseScriptFile(String[] args) {
+        for (int i = 0; i < args.length; i++) {
+            if (args[i].equals("-f") || args[i].equals("--file")) {
+                if (i + 1 >= args.length) {
+                    throw new IllegalArgumentException(args[i] + " 需要指定 SQL 文件路径");
+                }
+                return args[i + 1];
+            }
+        }
+        return args.length > 0 ? args[0] : null;
+    }
+
+    /**
+     * 脚本文件路径：逐行读取 .sql 文件执行。连续的 SQL 语句通过
+     * {@link SqlEngine#executeBatch} 批量执行（流水线协议，减少逐条往返）；
+     * 元命令（exit/debug/history/!N）打断批量段、单条处理。空行与整行
+     * 注释（-- 开头）静默跳过；exit 提前结束；读取失败返回 false。
+     */
+    private static boolean runScriptFile(SqlEngine engine, String path) {
+        Executor renderer = new Executor();
+        CommandHistory history = new CommandHistory();
+        List<String> lines;
+        try {
+            lines = Files.readAllLines(Path.of(path), StandardCharsets.UTF_8);
+            // 剥离 UTF-8 BOM：记事本等编辑器保存的文件可能带 BOM，
+            // 不剥离的话第一条语句会被 Lexer 报"非法字符"
+            if (!lines.isEmpty()) {
+                lines.set(0, lines.get(0).replace("\uFEFF", ""));
+            }
+        } catch (IOException e) {
+            System.out.println("⚠无法读取 SQL 文件: " + path + " (" + e.getMessage() + ")");
+            return false;
+        }
+        List<String> pending = new ArrayList<>(); // 待批量执行的连续 SQL 段
+        for (String line : lines) {
+            String text = line.trim();
+            if (text.isEmpty() || text.startsWith("--")) {
+                continue; // 空行/注释行不进入历史，也不触发语义报错
+            }
+            if (isMetaCommand(text)) {
+                flushBatch(engine, renderer, pending);
+                if (!processInput(engine, renderer, history, text)) {
+                    return true; // exit：提前结束
+                }
+            } else {
+                pending.add(text);
+            }
+        }
+        flushBatch(engine, renderer, pending);
+        return true;
+    }
+
+    /** 批量执行待处理语句并逐条回显+渲染结果，保证执行过程可追溯 */
+    private static void flushBatch(SqlEngine engine, Executor renderer, List<String> pending) {
+        if (pending.isEmpty()) {
+            return;
+        }
+        List<StorageResult> results = engine.executeBatch(pending);
+        for (int i = 0; i < pending.size(); i++) {
+            System.out.println("sqxdl> " + pending.get(i));
+            renderer.render(results.get(i));
+        }
+        pending.clear();
+    }
+
+    /** 与 processInput 的元命令保持一致：exit/debug/.debug/history/!N 重放 */
+    private static boolean isMetaCommand(String text) {
+        String lower = text.toLowerCase(Locale.ROOT);
+        return lower.equals(EXIT_COMMAND) || lower.equals("debug") || lower.equals(".debug")
+                || lower.equals("history") || text.startsWith("!");
     }
 
     /** 按 TTY 可用性选择输入路径。 */
