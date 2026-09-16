@@ -2,6 +2,7 @@ package com.sqxdl.executor;
 
 import com.sqxdl.executor.storage.StorageResult;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -18,6 +19,12 @@ import java.util.List;
  * <p>用例按顺序执行且共享同一引擎实例（前面的建表/插入供后面查询/删除使用）；
  * 预期错误码与 SqlEngine 的错误分类对应：词法/语法错误与缺失分号 → SYNTAX_ERROR，
  * 语义校验失败 → SEMANTIC_ERROR，空输入 → EMPTY_SQL。
+ *
+ * <p>LOCAL 用例之后追加流式协议集成测试段（AUTO 模式，需 storage_core.exe），
+ * 验证 C 组分帧流式 resultset（header + rows* + end）在客户端的组装正确性：
+ * 大结果集跨帧、流式 filter/project、流式与 rowcount 交替后的帧序对齐、
+ * executeBatch 多条流式响应按序组装、join 物化单行响应与流式响应同会话混用。
+ * 核心不可用时该段整段跳过（SKIP），不影响 LOCAL 用例的验收结论。
  *
  * <p>运行方式：java com.sqxdl.executor.TestRunner（退出码 0 = 全部通过）
  */
@@ -77,7 +84,8 @@ public class TestRunner {
         System.out.println("========================================");
         System.out.printf("总计 %d | 通过 %d | 失败 %d%n", cases.size(), passed, failed);
         System.out.println(failed == 0 ? "结果: 全部通过" : "结果: 存在失败用例");
-        if (failed > 0) {
+        int streamFailed = runStreamingTests();
+        if (failed > 0 || streamFailed > 0) {
             System.exit(1);
         }
     }
@@ -119,6 +127,159 @@ public class TestRunner {
                 new Case("仅一个分号", ";", Expected.error("EMPTY_SQL")),
                 new Case("超长标识符(词法合法,表不存在)", "SELECT * FROM " + longName + ";", Expected.error("SEMANTIC_ERROR")),
                 new Case("大小写混写(关键字不敏感)", "SeLeCt * FrOm student WhERE id = 1;", Expected.success()));
+    }
+
+    /**
+     * 流式协议集成测试（AUTO 模式）：走真实 storage_core.exe，验证 C 组分帧流式
+     * resultset（header + rows* + end，每 256 行一帧）在客户端的组装正确性。
+     * 覆盖：600 行大结果集跨帧（256+256+88）与行序、流式 filter/project、
+     * 流式与 rowcount 交替后的帧序对齐、executeBatch 连续流式响应按序组装、
+     * join（整体物化单行响应）与流式响应同会话混用。
+     * 存储核心不可用时整段跳过，返回 0（不计失败）。
+     *
+     * @return 流式段失败用例数
+     */
+    private static int runStreamingTests() {
+        System.out.println();
+        System.out.println("---- 流式协议集成测试（AUTO 模式，真实存储核心）----");
+        SqlEngine engine = new SqlEngine(SqlEngine.Mode.AUTO);
+        int passed = 0;
+        int failed = 0;
+        try {
+            if (!engine.isStorageAvailable()) {
+                System.out.println("  [SKIP] 存储核心不可用，流式用例全部跳过");
+                return 0;
+            }
+            // S1 建表 + 600 行批量插入：同时覆盖 executeBatch 流水线协议
+            List<String> setup = new ArrayList<>();
+            setup.add("CREATE TABLE stream_t (id INT, name VARCHAR, score DOUBLE);");
+            for (int i = 1; i <= 600; i++) {
+                setup.add("INSERT INTO stream_t VALUES (" + i + ", 'n" + i + "', " + (i / 10.0) + ");");
+            }
+            List<StorageResult> setupResults = engine.executeBatch(setup);
+            boolean s1 = setupResults.size() == 601 && setupResults.stream()
+                    .allMatch(r -> r.getType() == StorageResult.Type.ROWCOUNT);
+            if (report("S1 建表+600行批量插入(流水线)", s1,
+                    "期望 601 个 rowcount，实际 " + setupResults.size() + " 个")) {
+                passed++;
+            } else {
+                failed++;
+            }
+
+            // S2 全表查询跨帧组装：600 行分 3 帧（256+256+88），行序保持插入序
+            StorageResult all = engine.execute("SELECT * FROM stream_t;");
+            boolean s2 = all.getType() == StorageResult.Type.RESULTSET
+                    && all.getRows().size() == 600
+                    && all.getColumns().size() == 3
+                    && num(all, 0, 0) == 1 && num(all, 255, 0) == 256 && num(all, 599, 0) == 600;
+            if (report("S2 全表查询(3帧组装+行序)", s2, describeResult(all))) {
+                passed++;
+            } else {
+                failed++;
+            }
+
+            // S3 流式 filter：score > 59.5 命中 id 596..600 共 5 行
+            StorageResult filtered = engine.execute("SELECT * FROM stream_t WHERE score > 59.5;");
+            boolean s3 = filtered.getType() == StorageResult.Type.RESULTSET
+                    && filtered.getRows().size() == 5
+                    && num(filtered, 0, 0) == 596 && num(filtered, 4, 0) == 600;
+            if (report("S3 流式filter", s3, describeResult(filtered))) {
+                passed++;
+            } else {
+                failed++;
+            }
+
+            // S4 流式 project 列裁剪：3 行 × 2 列
+            StorageResult projected = engine.execute("SELECT id, name FROM stream_t WHERE id <= 3;");
+            boolean s4 = projected.getType() == StorageResult.Type.RESULTSET
+                    && projected.getRows().size() == 3
+                    && projected.getColumns().size() == 2;
+            if (report("S4 流式project列裁剪", s4, describeResult(projected))) {
+                passed++;
+            } else {
+                failed++;
+            }
+
+            // S5 流式与 rowcount 交替执行：多帧响应收完后与下一条响应不串位
+            StorageResult before = engine.execute("SELECT * FROM stream_t;");
+            StorageResult inserted = engine.execute("INSERT INTO stream_t VALUES (601, 'n601', 60.1);");
+            StorageResult after = engine.execute("SELECT * FROM stream_t WHERE id = 601;");
+            StorageResult counted = engine.execute("SELECT COUNT(*) FROM stream_t;");
+            boolean s5 = before.getRows().size() == 600
+                    && inserted.getType() == StorageResult.Type.ROWCOUNT
+                    && after.getRows().size() == 1
+                    && counted.getRows().size() == 1
+                    && num(counted, 0, 0) == 601;
+            if (report("S5 流式/rowcount交替帧序对齐", s5,
+                    "600行→INSERT影响" + inserted.getRowsAffected()
+                            + "→" + after.getRows().size() + "行→COUNT=" + num(counted, 0, 0))) {
+                passed++;
+            } else {
+                failed++;
+            }
+
+            // S6 executeBatch 连续 3 条流式 SELECT：多帧响应按发送序读回对齐
+            // （S5 已插入 id=601，全表 601 行，score>59.5 命中 596..601 共 6 行）
+            List<StorageResult> batch = engine.executeBatch(List.of(
+                    "SELECT * FROM stream_t;",
+                    "SELECT * FROM stream_t WHERE score > 59.5;",
+                    "SELECT * FROM stream_t WHERE id = 601;"));
+            boolean s6 = batch.size() == 3
+                    && batch.get(0).getRows().size() == 601
+                    && batch.get(1).getRows().size() == 6
+                    && batch.get(2).getRows().size() == 1;
+            if (report("S6 批量流水线流式对齐", s6,
+                    "期望 601/6/1 行，实际 " + batch.stream()
+                            .mapToInt(r -> r.getRows().size()).summaryStatistics())) {
+                passed++;
+            } else {
+                failed++;
+            }
+
+            // S7 join 物化单行响应与流式响应同会话混用（stream_t.id 与 stream_u.tid 相等匹配 2 行）
+            List<StorageResult> joinSetup = engine.executeBatch(List.of(
+                    "CREATE TABLE stream_u (id INT, tid INT);",
+                    "INSERT INTO stream_u VALUES (1, 1);",
+                    "INSERT INTO stream_u VALUES (2, 2);"));
+            StorageResult joined = engine.execute(
+                    "SELECT * FROM stream_t JOIN stream_u ON stream_t.id = stream_u.tid;");
+            boolean s7 = joinSetup.stream()
+                    .allMatch(r -> r.getType() == StorageResult.Type.ROWCOUNT)
+                    && joined.getType() == StorageResult.Type.RESULTSET
+                    && joined.getRows().size() == 2
+                    && joined.getColumns().size() == 5;
+            if (report("S7 join物化与流式混用", s7, describeResult(joined))) {
+                passed++;
+            } else {
+                failed++;
+            }
+
+            // 清理测试表（清理失败不影响验收结论）
+            engine.executeBatch(List.of("DROP TABLE stream_t;", "DROP TABLE stream_u;"));
+        } catch (RuntimeException e) {
+            // 用例级兜底：断言越界等异常不允许进程崩溃，计为该段失败
+            failed++;
+            System.out.println("  [FAIL] 流式测试异常中断: " + e);
+        } finally {
+            engine.close();
+        }
+        System.out.printf("流式段: 通过 %d | 失败 %d | 总计 %d%n", passed, failed, passed + failed);
+        return failed;
+    }
+
+    /** 打印流式用例结果并返回是否通过 */
+    private static boolean report(String name, boolean ok, String detail) {
+        System.out.printf("  [%s] %s | %s%n", ok ? "PASS" : "FAIL", name, detail);
+        return ok;
+    }
+
+    /** 安全读取 result.rows[row][col] 的数值；越界或非数值返回 -1 */
+    private static int num(StorageResult result, int row, int col) {
+        if (row >= result.getRows().size() || result.getRows().get(row).size() <= col) {
+            return -1;
+        }
+        Object value = result.getRows().get(row).get(col);
+        return value instanceof Number n ? n.intValue() : -1;
     }
 
     /** 结果的中文描述：成功带行数/影响行数，错误带错误码与消息 */
