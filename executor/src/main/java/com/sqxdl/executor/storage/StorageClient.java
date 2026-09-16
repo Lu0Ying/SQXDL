@@ -114,7 +114,7 @@ public class StorageClient {
 
     /**
      * 批量调用（流水线协议）：一次写入全部计划 JSON 行，按序读回等量结果行。
-     * 存储核心本就是"读一行-执行-立即回一行"的流式循环，无需改动；
+     * 存储核心本就是"读一行-执行-立即回写结果"的流式循环，无需改动；
      * 写入放在独立线程：Windows 管道缓冲约 64KB，大批量写入会被背压阻塞，
      * 若在主线程"写完再读"，核心回写大结果同样被阻塞会造成死锁，
      * 写读并行后由管道自然节流。任一行失败（超时/进程退出/响应非法）即
@@ -149,36 +149,22 @@ public class StorageClient {
             writer.start();
 
             List<StorageResult> results = new ArrayList<>(planJsons.size());
+            lastParseNanos = 0; // 重置分段采样：解析耗时由 parseLine 在本次批量内累加
             long wait0 = System.nanoTime();
             for (int i = 0; i < planJsons.size(); i++) {
-                String line;
+                // 每条响应自身可能由多帧组成（流式 resultset），readResponse 读到帧尾为止，
+                // 因此结果与输入仍严格一一对应
                 try {
-                    Future<String> pendingLine = readerPool.submit(() -> stdout.readLine());
-                    line = pendingLine.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                    results.add(readResponse());
                 } catch (TimeoutException e) {
                     closeSession();
                     return failedRemainder(results, planJsons.size(),
                             StorageResult.error("STORAGE_TIMEOUT",
                                     "存储核心执行超时（批量第 " + (i + 1) + " 条处）"));
-                } catch (ExecutionException e) {
+                } catch (ResponseException e) {
                     closeSession();
                     return failedRemainder(results, planJsons.size(),
-                            StorageResult.error("STORAGE_UNAVAILABLE",
-                                    "读取存储核心输出失败: " + e.getCause().getMessage()));
-                }
-                if (line == null) {
-                    closeSession();
-                    return failedRemainder(results, planJsons.size(),
-                            StorageResult.error("STORAGE_UNAVAILABLE",
-                                    "存储核心进程已退出（批量第 " + (i + 1) + " 条处）"));
-                }
-                try {
-                    results.add(StorageResult.parse(line.trim()));
-                } catch (RuntimeException e) {
-                    closeSession();
-                    return failedRemainder(results, planJsons.size(),
-                            StorageResult.error("INVALID_RESPONSE",
-                                    "存储核心返回了无法解析的结果: " + line.trim()));
+                            StorageResult.error(e.code(), e.getMessage() + "（批量第 " + (i + 1) + " 条处）"));
                 }
             }
             try {
@@ -187,17 +173,12 @@ public class StorageClient {
                 Thread.currentThread().interrupt();
             }
             lastSendNanos = System.nanoTime() - send0;
-            lastWaitNanos = System.nanoTime() - wait0;
-            lastParseNanos = 0; // 响应解析已在 wait 段内逐行完成
+            lastWaitNanos = System.nanoTime() - wait0 - lastParseNanos;
             return results;
         } catch (IOException e) {
             closeSession();
             return failedAll(planJsons.size(),
                     StorageResult.error("STORAGE_UNAVAILABLE", "无法启动存储核心: " + e.getMessage()));
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return failedAll(planJsons.size(),
-                    StorageResult.error("STORAGE_UNAVAILABLE", "等待存储核心时被中断"));
         }
     }
 
@@ -235,45 +216,103 @@ public class StorageClient {
             current.getOutputStream().flush();
             lastSendNanos = System.nanoTime() - t0;
 
-            // 阻塞 readLine 交给单线程池执行，主线程限时等待，防止核心无响应卡死 REPL
-            t0 = System.nanoTime();
-            Future<String> pendingLine = readerPool.submit(() -> stdout.readLine());
-            String line;
-            try {
-                line = pendingLine.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            } catch (TimeoutException e) {
-                pendingLine.cancel(true);
-                closeSession();
-                return StorageResult.error("STORAGE_TIMEOUT", "存储核心执行超时");
-            } catch (ExecutionException e) {
-                closeSession();
-                return StorageResult.error("STORAGE_UNAVAILABLE",
-                        "读取存储核心输出失败: " + e.getCause().getMessage());
-            } finally {
-                lastWaitNanos = System.nanoTime() - t0;
-            }
-            if (line == null) {
-                // 核心进程已退出（EOF），关闭会话待下次重启
-                closeSession();
-                return StorageResult.error("STORAGE_UNAVAILABLE", "存储核心进程已退出");
-            }
-            t0 = System.nanoTime();
-            try {
-                return StorageResult.parse(line.trim());
-            } catch (RuntimeException e) {
-                // 返回内容不是协议 JSON，行序可能已错乱，重建会话保证后续对齐
-                closeSession();
-                return StorageResult.error("INVALID_RESPONSE",
-                        "存储核心返回了无法解析的结果: " + line.trim());
-            } finally {
-                lastParseNanos = System.nanoTime() - t0;
-            }
+            lastParseNanos = 0; // 重置分段采样：解析耗时由 parseLine 在本次响应内累加
+            return readResponse();
+        } catch (TimeoutException e) {
+            closeSession();
+            return StorageResult.error("STORAGE_TIMEOUT", "存储核心执行超时");
+        } catch (ResponseException e) {
+            // 响应非法或进程已退出：行序可能已错乱，关闭会话待下次重启
+            closeSession();
+            return StorageResult.error(e.code(), e.getMessage());
         } catch (IOException e) {
             closeSession();
             return StorageResult.error("STORAGE_UNAVAILABLE", "无法启动存储核心: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 读取一条完整响应：行协议下 resultset 可能由「header + rows* + end」多帧组成，
+     * 此处续读至帧尾（或中途的 error 帧）后组装为单个结果返回；
+     * rowcount / error / 非流式 resultset 只读一行。
+     */
+    private StorageResult readResponse() throws IOException, TimeoutException {
+        final long t0 = System.nanoTime();
+        final long parseBefore = lastParseNanos;
+        try {
+            return readFrames();
+        } finally {
+            // 核心执行+回传的等待时间（不含本地解析，与单行协议时期的口径一致）
+            lastWaitNanos = System.nanoTime() - t0 - (lastParseNanos - parseBefore);
+        }
+    }
+
+    /** 读首帧；流式 header 则续读数据帧直到 end 帧 */
+    private StorageResult readFrames() throws IOException, TimeoutException {
+        final String first = readLineOrThrow().trim();
+        final StorageResult head = parseLine(first);
+        if (!StorageResult.isStreamingHeader(first)) {
+            return head;
+        }
+        List<List<Object>> rows = new ArrayList<>();
+        while (true) {
+            final String frame = readLineOrThrow().trim();
+            final String type = StorageResult.frameType(frame);
+            if ("end".equals(type)) {
+                return StorageResult.resultset(head.getColumns(), rows);
+            }
+            if (!"rows".equals(type)) {
+                // 结果集未走完就收到非数据帧（如执行中途出错）：该帧即最终结果
+                return parseLine(frame);
+            }
+            rows.addAll(StorageResult.parseRowBatch(frame));
+        }
+    }
+
+    /** 阻塞读取一行结果（带超时）；EOF 表示会话已失效 */
+    private String readLineOrThrow() throws IOException, TimeoutException {
+        Future<String> pendingLine = readerPool.submit(() -> stdout.readLine());
+        try {
+            final String line = pendingLine.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            if (line == null) {
+                throw new ResponseException("STORAGE_UNAVAILABLE", "存储核心进程已退出");
+            }
+            return line;
+        } catch (TimeoutException e) {
+            pendingLine.cancel(true);
+            throw e;
+        } catch (ExecutionException e) {
+            throw new ResponseException("STORAGE_UNAVAILABLE",
+                    "读取存储核心输出失败: " + e.getCause().getMessage());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return StorageResult.error("STORAGE_UNAVAILABLE", "等待存储核心时被中断");
+            throw new ResponseException("STORAGE_UNAVAILABLE", "等待存储核心时被中断");
+        }
+    }
+
+    /** 解析一条协议帧；结构非法抛 INVALID_RESPONSE（耗时累加进 lastParseNanos 供分段展示） */
+    private StorageResult parseLine(String line) throws ResponseException {
+        final long t0 = System.nanoTime();
+        try {
+            return StorageResult.parse(line);
+        } catch (RuntimeException e) {
+            throw new ResponseException("INVALID_RESPONSE", "存储核心返回了无法解析的结果: " + line);
+        } finally {
+            lastParseNanos += System.nanoTime() - t0;
+        }
+    }
+
+    /** 带协议错误码的响应异常：调用方据此返回对应错误码并重置会话 */
+    private static final class ResponseException extends IOException {
+        private final String code;
+
+        ResponseException(String code, String message) {
+            super(message);
+            this.code = code;
+        }
+
+        String code() {
+            return code;
         }
     }
 

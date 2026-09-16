@@ -7,6 +7,7 @@
 #include "core/storage_error.h"
 
 #include "query_op.h"
+#include "row_source.h"
 #include "insert_op.h"
 #include "update_op.h"
 #include "delete_op.h"
@@ -51,8 +52,16 @@ int main()
 
             const std::string op = physic_plan.value("op", "");
 
-            if (op == "scan" || op == "filter" || op == "project" || op == "join")
+            if (op == "scan" || op == "filter" || op == "project")
             {
+                // 流式路径：按分帧协议边拉取边写出，不整体物化结果集
+                std::unique_ptr<RowSource> source = build_row_source(physic_plan);
+                stream_to_resultset(*source, std::cout, start_time);
+                continue; // 耗时已随 end 帧写出，无需再走通用单行输出
+            }
+            if (op == "join")
+            {
+                // join（含子树）沿用整体物化实现，仍以单行结果集返回
                 result = execute_query_node(physic_plan);
             }
             else if (op == "insert")
@@ -127,13 +136,10 @@ int main()
                 {"error", {{"code", "INTERNAL_ERROR"}, {"message", "Unknown error"}}}};
         }
 
-        // 高精度计时：steady_clock 是单调时钟（不受系统时间调整影响），
-        // 按其原生亚毫秒精度取差值后换算为毫秒小数；四舍五入到微秒，
+        // 单行结果（rowcount / error / 非流式 resultset）的耗时统一按
+        // steady_clock（单调时钟）差值换算为毫秒小数，四舍五入到微秒，
         // 避免浮点误差在 JSON 中产生 9.943999999 一类的长尾小数
-        const auto end_time = std::chrono::steady_clock::now();
-        const double elapsed_ms =
-            std::chrono::duration<double, std::milli>(end_time - start_time).count();
-        result["time"] = std::round(elapsed_ms * 1000.0) / 1000.0;
+        result["time"] = elapsed_millis(start_time);
 
         std::cout << result.dump() << std::endl;
     }

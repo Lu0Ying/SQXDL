@@ -13,13 +13,16 @@ storage_core.exe
 ```
 
 - 输入：通过**标准输入（stdin）**逐行传入，**每行一个完整的 physic plan JSON**。
-- 存储 core 启动后进入主循环：读取一行 → 执行 → 向 stdout 打印一行结果 → 继续读取。
+- 存储 core 启动后进入主循环：读取一行 → 执行 → 向 stdout 打印结果 → 继续读取。
 - **退出指令**：读取到单独一行的 `exit`，或 plan `{"op": "exit"}` 时，进程正常退出
   （退出码 0），该行不产生任何输出。
 - stdin 关闭（EOF）时同样正常退出。
 - 空行（仅含空白字符）被忽略，不产生输出。
 - 某一行 JSON 解析失败或 op 非法时，输出一行 `INVALID_PLAN` 错误并**继续**处理后续
   行，进程不会退出。
+- **结果行数**：写操作、`join`、`showTables`、`describeTable` 固定输出**一行**结果；
+  `scan` / `filter` / `project` 的查询结果按**分帧流式**输出（一行进、多行出，
+  详见 2.1），调用方须读到结束帧为止。
 
 一次会话的输入输出示意（`>` 为输入，`<` 为输出）：
 
@@ -217,8 +220,9 @@ storage_core.exe
 
 ## 2. 输出格式
 
-服务式运行下，每输入一行 physic plan，存储核心即向**标准输出（stdout）**打印
-**一行** JSON 结果（一行进、一行出），统一外层结构为：
+服务式运行下，每输入一行 physic plan，存储核心即向**标准输出（stdout）**打印该次执行
+的结果：除**流式结果集**（`scan` / `filter` / `project` 的查询结果，见 2.1）为多行外，
+其余结果均为**一行** JSON（一行进、一行出），统一外层结构为：
 
 ```json
 { "success": true, "type": "...", "time": 1.874, ... }    // 成功
@@ -234,11 +238,37 @@ storage_core.exe
 输入开始计时，覆盖 JSON 解析与计划执行的全过程，到结果生成完毕为止。计时使用
 单调时钟（`std::chrono::steady_clock`）按亚毫秒精度取差值并四舍五入到微秒，
 因此单次操作不再因整毫秒取整而显示为 0。该字段仅用于性能观测，调用方可忽略。
+流式结果集的耗时随「结果全部产出完毕」而定，因此落在最后一行 `end` 帧上。
 
 > 说明：下文各结果示例为突出各 `type` 的专属字段，省略了通用的 `time` 字段；
 > 实际输出中每个结果均包含它。
 
 ### 2.1 SELECT：返回数据集
+
+查询结果**不整体拼成一行**，而是分帧边读边写：`scan` / `filter` / `project` 的顶层
+查询由首帧 header、若干数据帧 rows、末帧 end 组成（结果集大时也不随结果量占用
+额外内存），调用方须按帧类型读到 `end` 帧（或中途的 `error` 帧）为止：
+
+```text
+{"success":true,"type":"resultset","columns":["id","name"],"streaming":true}
+{"type":"rows","rows":[[1,"Alice"],[2,"Bob"]]}
+{"type":"end","rowCount":2,"time":0.208}
+```
+
+- **header 帧**：`success` / `type:"resultset"` / `columns`（结果列名列表）+
+  `"streaming":true`（标记本响应为多行分帧，须续读）。
+- **rows 帧**：`rows` 为二维数组的一批行（每批最多 256 行），字段顺序与 `columns`
+  一致；一批写出一条 rows 帧并立即 flush，调用方可边收边处理。
+- **end 帧**：`rowCount` 为结果总行数，`time` 为本次请求耗时（毫秒）。
+- **中途出错**：执行中途才出现的错误（如条件求值类型不兼容）以一条
+  `{"success":false,"type":"error",...}` 收尾，不再输出 end 帧；调用方读到非
+  `rows` / `end` 的帧即按该帧结果处理，结果集整体视为失败。
+
+> `columns` 取值：`project` 取其 `columns`；`scan` 为表的全部列名；
+> `filter` 与 child 一致；`join` 见下方命名规则。
+
+**非流式形态（单行）**：`join` 的结果沿用整体物化实现，仍是**单行**完整结果集
+（首帧不带 `streaming` 字段，直接携带 `rows` 数组）：
 
 ```json
 {
@@ -252,9 +282,8 @@ storage_core.exe
 }
 ```
 
-- `columns`：结果列名列表（`project` 取其 `columns`；`scan` 为表的全部列名，
-  `filter` 与 child 一致，`join` 见下方命名规则）。
-- `rows`：二维数组，每个元素为一行，字段顺序与 `columns` 一致。
+> 调用方按首帧区分两种形态：带 `"streaming":true` 者为分帧流式（续读到 end），
+> 否则该行即完整结果。
 
 > **JOIN 结果列命名**：连接结果同属 `resultset`，`columns` 按下述规则生成——
 > 左右两侧重名的列加来源前缀 `别名.列名`（别名取节点 `alias`，缺省为扫描表名），
@@ -400,7 +429,7 @@ public class StorageClient implements AutoCloseable {
                 process.getInputStream(), StandardCharsets.UTF_8));
     }
 
-    /** 发送一行 physic plan JSON，阻塞返回一行结果 JSON */
+    /** 发送一行 physic plan JSON，阻塞返回本次响应的首行 JSON */
     public synchronized String execute(String planJson) {
         try {
             writer.write(planJson);
@@ -441,14 +470,20 @@ try (StorageClient client = new StorageClient()) {
 
 注意事项：
 
-- **同步请求-响应**：每次 `execute()` 写一行后立即 `readLine()`。服务严格
-  一行进一行出，这样最简单且安全；若改为「连续写多行再统一读」，当写入量
-  超过管道缓冲区时会造成双方互相等待的死锁，必须用单独线程持续读取 stdout。
+- **同步请求-响应**：每次 `execute()` 写一行后读取本次响应。写操作与
+  `join`/`showTables`/`describeTable` 的结果只有一行；`scan`/`filter`/`project`
+  的结果集为多行分帧，需继续 `readLine()` 直到 `end` 帧（见下），然后再发下一条
+  计划。若改为「连续写多行再统一读」，当写入量超过管道缓冲区时会造成双方互相
+  等待的死锁，必须用单独线程持续读取 stdout。
+- **流式结果集的续读**：首行 `type` 为 `resultset` 且带 `"streaming":true` 时，
+  后续还有若干 `{"type":"rows",...}` 数据帧与一条 `{"type":"end",...}` 结束帧
+  （或中途一条 `error` 帧提前收尾），须读到帧尾才算收完该结果——executor 模块的
+  `StorageClient` 已按此实现（`readResponse()`），可直接复用。
 - **编码统一 UTF-8**：plan 中的中文（如表名、字符串值）依赖编码一致，
   不要使用平台默认字符集。
 - **换行即协议**：每行必须以换行符结尾（`newLine()` 或 `\n`），空行会被服务忽略。
 - **结束务必发 `exit`**：否则需依赖关闭 stdin（`writer.close()` 触发 EOF）退出，
   显式发送 `exit` 最可靠。
-- 返回结果固定一行 JSON，`success=false` 时读取 `error.code` 做程序化处理；
-  每个结果都含 `time` 字段（本次处理耗时，单位为毫秒的**小数**，精确到微秒），
+- `success=false` 时读取 `error.code` 做程序化处理；每个结果都含 `time` 字段
+  （本次处理耗时，单位为毫秒的**小数**，精确到微秒；流式结果集在 `end` 帧上），
   可用于性能观测。

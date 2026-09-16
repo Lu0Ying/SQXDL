@@ -7,6 +7,12 @@ import java.util.Map;
 /**
  * 存储核心返回结果的 Java 模型（D 组 storage 子包），对应 storage/readme.md
  * 第 2 节的输出契约：resultset（查询数据集）/ rowcount（影响行数）/ error（错误信息）。
+ * <p>resultset 有单行与流式分帧两种形态：单行（join/showTables/describeTable 及兼容）
+ * 直接带 rows 数组；流式（scan/filter/project 的顶层查询）首行 header 带
+ * {@code "streaming":true}，其后是若干 rows 帧与一条 end 帧，由
+ * {@link StorageClient} 续读组装成同一个 {@code resultset}；本类的
+ * {@link #isStreamingHeader(String)} / {@link #frameType(String)} /
+ * {@link #parseRowBatch(String)} 即用于该分帧解析。
  * <p>三种来源：
  * <ul>
  *   <li>{@link #parse(String)} —— 解析 C 组核心进程输出的一行结果 JSON</li>
@@ -80,14 +86,50 @@ public class StorageResult {
     }
 
     private static StorageResult fromResultSet(Map<?, ?> map) {
-        List<String> columns = toStringList(map.get("columns"));
+        return new StorageResult(Type.RESULTSET, toStringList(map.get("columns")),
+                toRows(map.get("rows")), 0, null, null);
+    }
+
+    /**
+     * 首行是否为流式 resultset 的 header（含 {@code "streaming":true}）。
+     * 流式响应后续还有若干 {@code {"type":"rows"}} 数据帧与一条 {@code {"type":"end"}}
+     * 结束帧，调用方须续读至 end（或中途的 error 帧）才算收完一条响应。
+     */
+    public static boolean isStreamingHeader(String json) {
+        Object root = Json.parse(json);
+        return root instanceof Map<?, ?> map
+                && Boolean.TRUE.equals(map.get("success"))
+                && "resultset".equals(String.valueOf(map.get("type")))
+                && Boolean.TRUE.equals(map.get("streaming"));
+    }
+
+    /** 读取一条协议行的 {@code type} 字段（rows / end / resultset / rowcount / error）；非对象返回空串 */
+    public static String frameType(String json) {
+        Object root = Json.parse(json);
+        if (root instanceof Map<?, ?> map) {
+            Object type = map.get("type");
+            return type == null ? "" : String.valueOf(type);
+        }
+        return "";
+    }
+
+    /** 解析一条 {@code {"type":"rows"}} 数据帧中的 rows 数组 */
+    public static List<List<Object>> parseRowBatch(String json) {
+        Object root = Json.parse(json);
+        if (!(root instanceof Map<?, ?> map)) {
+            throw new IllegalArgumentException("数据帧不是 JSON 对象");
+        }
+        return toRows(map.get("rows"));
+    }
+
+    private static List<List<Object>> toRows(Object value) {
         List<List<Object>> rows = new ArrayList<>();
-        if (map.get("rows") instanceof List<?> rawRows) {
+        if (value instanceof List<?> rawRows) {
             for (Object row : rawRows) {
                 rows.add(new ArrayList<>(toObjectList(row)));
             }
         }
-        return new StorageResult(Type.RESULTSET, columns, rows, 0, null, null);
+        return rows;
     }
 
     private static StorageResult fromRowcount(Map<?, ?> map) {

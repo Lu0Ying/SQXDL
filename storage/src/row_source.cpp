@@ -10,170 +10,170 @@
 
 namespace
 {
-// 全表扫描行源：包装 RowStore 的页级流式迭代器（一次只驻留一页）
-class ScanRowSource : public RowSource
-{
-public:
-    ScanRowSource(std::vector<std::string> columns, std::unique_ptr<RowIterator> iterator)
-        : column_names_(std::move(columns)), iterator_(std::move(iterator))
+    // 全表扫描行源：包装 RowStore 的页级流式迭代器（一次只驻留一页）
+    class ScanRowSource : public RowSource
     {
-    }
-
-    bool next(Row &out) override
-    {
-        return iterator_->next(out);
-    }
-
-    const std::vector<std::string> &column_names() const override
-    {
-        return column_names_;
-    }
-
-private:
-    std::vector<std::string> column_names_;
-    std::unique_ptr<RowIterator> iterator_;
-};
-
-// 过滤行源：逐行求值 condition，命中即产出（列清单与 child 一致）
-class FilterRowSource : public RowSource
-{
-public:
-    FilterRowSource(std::unique_ptr<RowSource> child, ExpressionPtr condition)
-        : child_(std::move(child)), condition_(std::move(condition))
-    {
-    }
-
-    bool next(Row &out) override
-    {
-        Row row;
-        while (child_->next(row))
+    public:
+        ScanRowSource(std::vector<std::string> columns, std::unique_ptr<RowIterator> iterator)
+            : column_names_(std::move(columns)), iterator_(std::move(iterator))
         {
-            const EvalContext ctx(child_->column_names(), row);
-            if (condition_->evaluate(ctx).truth_value())
+        }
+
+        bool next(Row &out) override
+        {
+            return iterator_->next(out);
+        }
+
+        const std::vector<std::string> &column_names() const override
+        {
+            return column_names_;
+        }
+
+    private:
+        std::vector<std::string> column_names_;
+        std::unique_ptr<RowIterator> iterator_;
+    };
+
+    // 过滤行源：逐行求值 condition，命中即产出（列清单与 child 一致）
+    class FilterRowSource : public RowSource
+    {
+    public:
+        FilterRowSource(std::unique_ptr<RowSource> child, ExpressionPtr condition)
+            : child_(std::move(child)), condition_(std::move(condition))
+        {
+        }
+
+        bool next(Row &out) override
+        {
+            Row row;
+            while (child_->next(row))
             {
-                out = std::move(row);
-                return true;
+                const EvalContext ctx(child_->column_names(), row);
+                if (condition_->evaluate(ctx).truth_value())
+                {
+                    out = std::move(row);
+                    return true;
+                }
             }
-        }
-        return false;
-    }
-
-    const std::vector<std::string> &column_names() const override
-    {
-        return child_->column_names();
-    }
-
-private:
-    std::unique_ptr<RowSource> child_;
-    ExpressionPtr condition_;
-};
-
-// 投影行源：按投影列下标抽选并重排（下标在构建时定位一次）
-class ProjectRowSource : public RowSource
-{
-public:
-    ProjectRowSource(std::unique_ptr<RowSource> child, std::vector<size_t> indices,
-                     std::vector<std::string> columns)
-        : child_(std::move(child)), indices_(std::move(indices)), column_names_(std::move(columns))
-    {
-    }
-
-    bool next(Row &out) override
-    {
-        Row row;
-        if (!child_->next(row))
-        {
             return false;
         }
-        Row projected;
-        for (const size_t index : indices_)
+
+        const std::vector<std::string> &column_names() const override
         {
-            projected.append(row.at(index));
+            return child_->column_names();
         }
-        out = std::move(projected);
-        return true;
-    }
 
-    const std::vector<std::string> &column_names() const override
+    private:
+        std::unique_ptr<RowSource> child_;
+        ExpressionPtr condition_;
+    };
+
+    // 投影行源：按投影列下标抽选并重排（下标在构建时定位一次）
+    class ProjectRowSource : public RowSource
     {
-        return column_names_;
-    }
-
-private:
-    std::unique_ptr<RowSource> child_;
-    std::vector<size_t> indices_;
-    std::vector<std::string> column_names_;
-};
-
-// 物化行源：接管 join 等「返回完整结果集」的既有实现
-class MaterializedRowSource : public RowSource
-{
-public:
-    MaterializedRowSource(std::vector<std::string> columns, std::vector<Row> rows)
-        : column_names_(std::move(columns)), rows_(std::move(rows))
-    {
-    }
-
-    bool next(Row &out) override
-    {
-        if (index_ >= rows_.size())
+    public:
+        ProjectRowSource(std::unique_ptr<RowSource> child, std::vector<size_t> indices,
+                         std::vector<std::string> columns)
+            : child_(std::move(child)), indices_(std::move(indices)), column_names_(std::move(columns))
         {
-            return false;
         }
-        out = rows_[index_++];
-        return true;
-    }
 
-    const std::vector<std::string> &column_names() const override
-    {
-        return column_names_;
-    }
-
-private:
-    std::vector<std::string> column_names_;
-    std::vector<Row> rows_;
-    size_t index_ = 0;
-};
-
-// 把 join 等既有实现的结果集 JSON 转成物化行源
-std::unique_ptr<RowSource> materialized_from_node(const nlohmann::json &plan)
-{
-    const nlohmann::json result = execute_query_node(plan);
-    if (!result.is_object() || !result.value("success", false))
-    {
-        std::string code = "INTERNAL_ERROR";
-        std::string message = "Query child failed";
-        if (result.is_object() && result.contains("error") && result.at("error").is_object())
+        bool next(Row &out) override
         {
-            code = result.at("error").value("code", code);
-            message = result.at("error").value("message", message);
+            Row row;
+            if (!child_->next(row))
+            {
+                return false;
+            }
+            Row projected;
+            for (const size_t index : indices_)
+            {
+                projected.append(row.at(index));
+            }
+            out = std::move(projected);
+            return true;
         }
-        throw StorageError(code, message);
-    }
-    if (result.value("type", "") != "resultset" || !result.contains("columns") ||
-        !result.contains("rows") || !result.at("columns").is_array() || !result.at("rows").is_array())
-    {
-        throw StorageError("INVALID_PLAN", "Query child did not return a valid result set");
-    }
 
-    std::vector<std::string> columns;
-    columns.reserve(result.at("columns").size());
-    for (const auto &column : result.at("columns"))
-    {
-        if (!column.is_string())
+        const std::vector<std::string> &column_names() const override
         {
-            throw StorageError("INVALID_PLAN", "Result set column names must be strings");
+            return column_names_;
         }
-        columns.push_back(column.get<std::string>());
-    }
-    std::vector<Row> rows;
-    rows.reserve(result.at("rows").size());
-    for (const auto &row_json : result.at("rows"))
+
+    private:
+        std::unique_ptr<RowSource> child_;
+        std::vector<size_t> indices_;
+        std::vector<std::string> column_names_;
+    };
+
+    // 物化行源：接管 join 等「返回完整结果集」的既有实现
+    class MaterializedRowSource : public RowSource
     {
-        rows.push_back(Row::from_json(row_json));
+    public:
+        MaterializedRowSource(std::vector<std::string> columns, std::vector<Row> rows)
+            : column_names_(std::move(columns)), rows_(std::move(rows))
+        {
+        }
+
+        bool next(Row &out) override
+        {
+            if (index_ >= rows_.size())
+            {
+                return false;
+            }
+            out = rows_[index_++];
+            return true;
+        }
+
+        const std::vector<std::string> &column_names() const override
+        {
+            return column_names_;
+        }
+
+    private:
+        std::vector<std::string> column_names_;
+        std::vector<Row> rows_;
+        size_t index_ = 0;
+    };
+
+    // 把 join 等既有实现的结果集 JSON 转成物化行源
+    std::unique_ptr<RowSource> materialized_from_node(const nlohmann::json &plan)
+    {
+        const nlohmann::json result = execute_query_node(plan);
+        if (!result.is_object() || !result.value("success", false))
+        {
+            std::string code = "INTERNAL_ERROR";
+            std::string message = "Query child failed";
+            if (result.is_object() && result.contains("error") && result.at("error").is_object())
+            {
+                code = result.at("error").value("code", code);
+                message = result.at("error").value("message", message);
+            }
+            throw StorageError(code, message);
+        }
+        if (result.value("type", "") != "resultset" || !result.contains("columns") ||
+            !result.contains("rows") || !result.at("columns").is_array() || !result.at("rows").is_array())
+        {
+            throw StorageError("INVALID_PLAN", "Query child did not return a valid result set");
+        }
+
+        std::vector<std::string> columns;
+        columns.reserve(result.at("columns").size());
+        for (const auto &column : result.at("columns"))
+        {
+            if (!column.is_string())
+            {
+                throw StorageError("INVALID_PLAN", "Result set column names must be strings");
+            }
+            columns.push_back(column.get<std::string>());
+        }
+        std::vector<Row> rows;
+        rows.reserve(result.at("rows").size());
+        for (const auto &row_json : result.at("rows"))
+        {
+            rows.push_back(Row::from_json(row_json));
+        }
+        return std::make_unique<MaterializedRowSource>(std::move(columns), std::move(rows));
     }
-    return std::make_unique<MaterializedRowSource>(std::move(columns), std::move(rows));
-}
 } // namespace
 
 std::unique_ptr<RowSource> build_row_source(const nlohmann::json &plan)
@@ -289,4 +289,55 @@ nlohmann::json drain_to_resultset(RowSource &source)
             {"type", "resultset"},
             {"columns", std::move(columns)},
             {"rows", std::move(rows)}};
+}
+
+void stream_to_resultset(RowSource &source, std::ostream &out,
+                         std::chrono::steady_clock::time_point start)
+{
+    const std::vector<std::string> &names = source.column_names();
+    nlohmann::json columns = nlohmann::json::array();
+    for (const std::string &name : names)
+    {
+        columns.push_back(name);
+    }
+
+    // 首帧：列清单 + streaming 标记（调用方据此判定需续读 rows/end 帧）
+    out << nlohmann::json{{"success", true},
+                          {"type", "resultset"},
+                          {"columns", columns},
+                          {"streaming", true}}
+               .dump()
+        << '\n';
+    out.flush();
+
+    // 数据帧：每满一批立即写出并 flush，调用方可以边收边处理；
+    // 批次缓冲是唯一的行驻留，因此输出阶段内存占用为常数
+    nlohmann::json batch = nlohmann::json::array();
+    size_t row_count = 0;
+    Row row;
+    while (source.next(row))
+    {
+        batch.push_back(row.to_json());
+        ++row_count;
+        if (batch.size() >= kResultBatchRows)
+        {
+            out << nlohmann::json{{"type", "rows"}, {"rows", batch}}.dump() << '\n';
+            out.flush();
+            batch.clear();
+        }
+    }
+    if (!batch.empty())
+    {
+        out << nlohmann::json{{"type", "rows"}, {"rows", batch}}.dump() << '\n';
+        out.flush();
+        batch.clear();
+    }
+
+    // 末帧：结束标志 + 总行数 + 本次请求耗时（时间随结果产出完毕而定，只能落在末帧）
+    out << nlohmann::json{{"type", "end"},
+                          {"rowCount", row_count},
+                          {"time", elapsed_millis(start)}}
+               .dump()
+        << '\n';
+    out.flush();
 }
