@@ -275,7 +275,7 @@ public class SwingDemo extends JFrame {
         }
     }
 
-    /** 输入框回车 / 点击执行按钮：回显 SQL、执行并清空输入框（模拟 CLI 一轮交互）。 */
+    /** 输入框回车 / 点击执行按钮：回显 SQL、拆分多语句逐条执行并清空输入框。 */
     private void executeFromInput() {
         String sql = sqlArea.getText().trim();
         if (sql.isEmpty()) {
@@ -287,8 +287,34 @@ public class SwingDemo extends JFrame {
         inputHistory.add(sql);
         historyIndex = -1;
         historyDraft = "";
-        executeSql(sql);
+
+        // 多行输入可含多条语句：按顶层分号拆分逐条执行，任一条报错不中断后续
+        List<String> statements = SqlEngine.splitStatements(sql);
+        if (statements.isEmpty()) {
+            log("⚠ SQL 语句为空");
+            sqlArea.setText("");
+            return;
+        }
+        long start = System.currentTimeMillis();
+        for (String stmt : statements) {
+            // 手动执行 SELECT：清除左侧选中（点击列表触发的查询走 showTable，不受影响）
+            if (statementBody(stmt).toUpperCase().startsWith("SELECT")) {
+                tableList.clearSelection();
+            }
+            executeSql(stmt, false); // 单条耗时日志关闭，只在外层汇总一条总耗时
+        }
+        log("⏱ 执行耗时: " + (System.currentTimeMillis() - start) + "ms");
         sqlArea.setText("");
+    }
+
+    /**
+     * 返回语句剥除注释后的正文（trim 后），供语句类型前缀判断使用——
+     * 多行输入里语句可能带注释前缀（如 "-- 建表\nCREATE TABLE ..."），
+     * 直接对原文做 startsWith 判断会失效；未闭合注释等异常情形回退原文。
+     */
+    private String statementBody(String stmt) {
+        String stripped = SqlEngine.stripComments(stmt);
+        return (stripped == null ? stmt : stripped).trim();
     }
 
     /**
@@ -326,18 +352,9 @@ public class SwingDemo extends JFrame {
         log("🔄 已刷新表列表，当前共 " + tableList.getModel().getSize() + " 张表");
     }
 
-    /** 左侧点击表：走 SELECT * FROM 表 的完整流水线加载该表数据。 */
+    /** 左侧点击表：走 SELECT * FROM 表 的完整流水线加载该表数据（保持选中高亮）。 */
     private void showTable(String tableName) {
-        executeSql("SELECT * FROM " + tableName + ";");
-    }
-
-    /** 执行单条 SQL：调用引擎流水线，渲染结果、回退提示与耗时。 */
-    private void executeSql(String sql) {
-        // 用户手动执行 SELECT：清除左侧表列表选中（点击列表触发的查询走 showTable，不受影响）
-        if (sql.trim().toUpperCase().startsWith("SELECT")) {
-            tableList.clearSelection();
-        }
-        executeSql(sql, true);
+        executeSql("SELECT * FROM " + tableName + ";", true);
     }
 
     /** 按结果类型分发渲染：查询结果进表格，行数/错误进日志。 */
@@ -349,8 +366,8 @@ public class SwingDemo extends JFrame {
                 log(affected > 0
                         ? "✅ 执行成功，" + affected + " 行受影响"
                         : "✅ 执行成功");
-                // 建表成功后实时刷新左侧表列表
-                if (sql.toLowerCase().startsWith("create table")) {
+                // 建表成功后实时刷新左侧表列表（剥注释后判断，注释前缀不影响识别）
+                if (statementBody(sql).toUpperCase().startsWith("CREATE TABLE")) {
                     refreshTableList();
                 }
                 // 写操作成功后刷新当前表，让界面立即反映数据变化

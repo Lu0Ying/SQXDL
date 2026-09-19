@@ -72,13 +72,14 @@ SwingDemo (GUI) ─────────┘                     │
   让存储核心落盘。
 - **CommandHistory.java** — CLI 与 GUI 共用的输入历史：连续重复去重、
   `!N`/`!!` 解析、带编号清单输出（GUI ↑↓ 翻阅与 CLI 管道模式都依赖它）。
-- **SwingDemo.java** — 图形界面。顶部连接/断开按钮，左侧表列表 + 右侧数据表格，底部
-  SQL 输入区 + 日志区。所有执行委托 `SqlEngine`（AUTO 模式，数据持久化），回车直接
-  执行（Shift+Enter 换行），与 CLI 体验一致。输入框 ↑/↓ 翻阅输入历史（光标在
-  首行/末行时触发，翻回最新位置恢复未执行的草稿，多行编辑不受影响）。
-  CREATE TABLE 成功后左侧表列表实时刷新；
-  断开连接与窗口关闭都会以协议 exit 结束存储服务（数据落盘）；左侧列表在启动时从
-  存储核心同步真实表清单。
+- **SwingDemo.java** — 图形界面。顶部「刷新」按钮同步左侧表列表（存储连接由引擎
+  自动管理：首次执行时启动、关窗时落盘退出，无需手动连接/断开），左侧表列表 +
+  右侧数据表格，底部 SQL 输入区 + 日志区。所有执行委托 `SqlEngine`（AUTO 模式，
+  数据持久化）：**Enter 执行整段输入、Shift+Enter 换行**（多行输入按顶层分号
+  拆分为单条语句逐条执行，任一条报错不中断后续）；输入框 ↑/↓ 翻阅输入历史
+  （光标在首行/末行时触发，翻回最新位置恢复未执行的草稿）。手动执行 SELECT 会
+  清除左侧表列表选中（点击列表触发的查询保持高亮）；CREATE TABLE 成功后左侧
+  表列表实时刷新；窗口关闭以协议 exit 结束存储服务（数据落盘）。
 
 ### 执行层
 
@@ -90,6 +91,10 @@ SwingDemo (GUI) ─────────┘                     │
   - `LOCAL`（仅显式选择或回退时）：始终用内置示例数据模拟，数据保存在 JVM 内。
   - 元数据一致性：CREATE TABLE 成功后按列定义带类型登记进数据字典；DROP TABLE 在
     执行成功（或回退模拟）后同步清理数据字典与模拟数据。
+  - 多语句工具：`splitStatements()` 把多行输入按**顶层分号**拆分为单条语句列表
+    （字符串字面量含 `''` 转义与行/块注释内的分号不作为分隔符），供 GUI 多行输入
+    逐条执行；`stripComments()` 公开为语句预处理工具（GUI 判断 SELECT / CREATE
+    TABLE 前缀时先剥注释，避免注释前缀导致识别失效）。
   - 模拟执行支持 SELECT（投影 + WHERE 过滤）、INSERT、UPDATE、DELETE、
     CREATE TABLE、SHOW TABLES、DROP TABLE；条件求值 `evalExpr` 递归处理 NOT 与
     二元表达式（AND/OR 短路、算术、数值/字符串自适应比较）。
@@ -187,15 +192,19 @@ mvn -pl executor exec:java -Dexec.mainClass=com.sqxdl.swing.SwingDemo
 ```
 
 Windows 分隔符为 `;`，Linux/macOS 为 `:`。也可直接在 IDEA 中运行
-`Main.main()` / `SwingDemo.main()`（依赖由 Maven 自动解析）。若不经 Maven、
-用 `javac/java` 直接编译运行 CLI，需把 JLine 三个 jar
-（`jline`、`jline-terminal-jna`、`jna`）加入 `-cp`。需要指定存储核心位置时加
-`-Dsqxdl.storage.exe=<exe 绝对路径>`。需要观察流水线中间结果（Token 流、
-AST 树、语义检查、优化前后 Plan 树）时，启动时加 `-Dsqxdl.debug=true`，或在
-REPL 中随时输入 `debug`（或 `.debug`）切换，再输入一次即关闭。
+`Main.main()` / `SwingDemo.main()`（依赖由 Maven 自动解析；IDEA Run 窗口无
+TTY，CLI 自动走 Scanner 管道路径，JLine 仅在真终端生效）。Windows 真终端下
+推荐项目根目录的 `run-cli.bat` 一键启动 CLI（内置完整 classpath 与
+`--enable-native-access=ALL-UNNAMED` 参数）。若不经 Maven、用 `javac/java`
+直接编译运行 CLI，需把 JLine 三个 jar（`jline`、`jline-terminal-jna`、`jna`）
+加入 `-cp`。需要指定存储核心位置时加 `-Dsqxdl.storage.exe=<exe 绝对路径>`。
+需要观察流水线中间结果（Token 流、AST 树、语义检查、优化前后 Plan 树）时，
+启动时加 `-Dsqxdl.debug=true`，或在 REPL 中随时输入 `debug`（或 `.debug`）切换，
+再输入一次即关闭。
 
 **脚本文件模式**（指导书：输入支持 SQL 文件）：`-f <文件>` / `--file <文件>`
-或把文件路径作为首个位置参数，逐行执行 .sql 文件（UTF-8，一行一条语句）：
+或把文件路径作为首个位置参数，逐行执行 .sql 文件（UTF-8，一行一条语句）。
+项目根目录的 `演示脚本.sql` 即此模式的一份完整答辩演示脚本：
 
 ```bash
 mvn -pl executor exec:java -Dexec.mainClass=com.sqxdl.executor.Main -Dexec.args="-f script.sql"

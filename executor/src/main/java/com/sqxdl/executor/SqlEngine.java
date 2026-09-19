@@ -325,6 +325,54 @@ public class SqlEngine implements AutoCloseable {
     }
 
     /**
+     * 把多行输入按"顶层分号"拆分为单条语句列表，供上层逐条执行（GUI 编辑区整体提交）。
+     * 字符串字面量（'...'，含 '' 转义）与注释（-- 行注释、块注释）内的分号不作为分隔符，
+     * 与 {@link #stripComments} 的扫描规则保持一致；每条语句保留结尾分号
+     * （execute 的分号校验要求）；末尾无分号的非空内容作为最后一条
+     * （其"缺分号"错误由 execute 校验统一报出，与单条输入行为一致）。
+     */
+    public static List<String> splitStatements(String sql) {
+        List<String> statements = new ArrayList<>();
+        int length = sql.length();
+        int start = 0; // 当前语句在原文中的起点
+        boolean inString = false;
+        for (int i = 0; i < length; i++) {
+            char c = sql.charAt(i);
+            if (inString) {
+                if (c == '\'') {
+                    if (i + 1 < length && sql.charAt(i + 1) == '\'') {
+                        i++; // '' 转义：仍是字符串内
+                    } else {
+                        inString = false;
+                    }
+                }
+            } else if (c == '\'') {
+                inString = true;
+            } else if (c == '-' && i + 1 < length && sql.charAt(i + 1) == '-') {
+                while (i < length && sql.charAt(i) != '\n') {
+                    i++; // 行注释：整体跳过
+                }
+            } else if (c == '/' && i + 1 < length && sql.charAt(i + 1) == '*') {
+                int end = sql.indexOf("*/", i + 2);
+                i = end < 0 ? length : end + 1; // 未闭合块注释跳到结尾，错误交给 Lexer 定位
+            } else if (c == ';') {
+                addStatement(statements, sql.substring(start, i + 1));
+                start = i + 1;
+            }
+        }
+        addStatement(statements, sql.substring(start));
+        return statements;
+    }
+
+    /** 空白内容不入列表，其余 trim 后收录。 */
+    private static void addStatement(List<String> statements, String text) {
+        String trimmed = text.trim();
+        if (!trimmed.isEmpty()) {
+            statements.add(trimmed);
+        }
+    }
+
+    /**
      * 判断计划是否包含需在 Java 端执行的算子（OrderBy/GroupBy 聚合与排序）。
      * 这类节点没有对应的物理 JSON 表示，批量协议无法直接下发，需走单条
      * {@link #execute} 路径（由 executePlan 先递归执行 child 再本地处理）。
@@ -508,8 +556,9 @@ public class SqlEngine implements AutoCloseable {
      * 与 Lexer 行为对齐：字符串字面量内的内容不视为注释；行注释丢弃但保留换行以维持行号；
      * 块注释替换为一个空格占位。检测到未闭合的字符串或块注释时返回 null，
      * 调用方跳过分号校验并保留原文，交由 Lexer 报出带行列位置的精确错误。
+     * public：GUI 语句类型判断（SELECT / CREATE TABLE 前缀）也需先剥注释。
      */
-    private static String stripComments(String sql) {
+    public static String stripComments(String sql) {
         StringBuilder sb = new StringBuilder(sql.length());
         boolean inString = false;
         for (int i = 0; i < sql.length(); i++) {
