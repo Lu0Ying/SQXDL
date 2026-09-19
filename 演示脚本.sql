@@ -10,9 +10,10 @@
 -- 前提：演示前先清空数据目录（把 C:\SQXDL\data\ 下的 catalog.json 和
 --       storage.db 改名移走），保证从全新库开始，本脚本不使用 DROP
 --       （DROP 后立刻重建同名表存在目录同步问题，勿在演示中使用）。
--- 说明：存储核心启动时会自动创建 4 张内置示例表（course/score/student/
---       teacher，其中内置 student 为 4 列含 grade），因此本脚本使用
---       student_info / score_info 两个独立表名演示，show tables 会看到 5 张表。
+-- 说明：AUTO 模式首次启动检测到空库时，Java 引擎（SqlEngine.bootstrapSampleData）
+--       会自动预置 3 张示例表并真实落库：student(4列含grade,5行)/course(3行)/
+--       teacher(3行)。因此本脚本使用 student_info / score_info 两个独立表名
+--       演示，show tables 会看到 5 张表。
 -- ============================================================
 
 -- 【第 1 段】建表 —— 指导书示例语句

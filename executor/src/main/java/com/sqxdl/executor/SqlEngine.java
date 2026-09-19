@@ -205,9 +205,9 @@ public class SqlEngine implements AutoCloseable {
                 "INSERT INTO course VALUES (101, 'Database', 4);",
                 "INSERT INTO course VALUES (102, 'Operating Sys', 3);",
                 "INSERT INTO course VALUES (103, 'Compiler', 4);",
-                "INSERT INTO teacher VALUES (1, 'Yao Xin', 'Computer');",
-                "INSERT INTO teacher VALUES (2, 'Gui Ning', 'Computer');",
-                "INSERT INTO teacher VALUES (3, 'Deng Lei', 'Computer');"
+                "INSERT INTO teacher VALUES (1, 'Teacher 1', 'Computer');",
+                "INSERT INTO teacher VALUES (2, 'Teacher 2', 'Computer');",
+                "INSERT INTO teacher VALUES (3, 'Teacher 3', 'Computer');"
         };
         for (String sql : inserts) {
             execute(sql);
@@ -1258,9 +1258,9 @@ public class SqlEngine implements AutoCloseable {
                         new CatalogImpl.ColumnInfo("dept", CatalogImpl.DataType.VARCHAR)
                 ),
                 new ArrayList<>(List.of(
-                        row(1, "Yao Xin", "Computer"),
-                        row(2, "Gui Ning", "Computer"),
-                        row(3, "Deng Lei", "Computer")
+                        row(1, "Teacher 1", "Computer"),
+                        row(2, "Teacher 2", "Computer"),
+                        row(3, "Teacher 3", "Computer")
                 ))
         ));
     }
